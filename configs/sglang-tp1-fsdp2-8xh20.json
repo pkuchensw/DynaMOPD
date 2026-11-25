@@ -6,7 +6,9 @@
   "preflight_heterogeneous_teachers": true,
   "warm_teachers": false,
   "teachers_per_group": 1,
-  "policy": "merge",
+  "policy": "cost_search",
+  "length_forecast": "conditional_quantiles",
+  "deferred_migration_prefill": true,
   "cluster": {
     "transport": "local"
   },

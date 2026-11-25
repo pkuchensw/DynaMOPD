@@ -59,7 +59,11 @@ def get_rows(cfg, tokenizer, common, data, version, simulate, algorithm):
         if not ids or len(ids) > cfg["max_prompt"] or not 1 <= limit <= cfg["max_new_tokens"]:
             raise ValueError("unsupported prompt or response length")
         rid = f"v{version}/r{i}"
-        rows.append(Row(rid, ids, route, cfg["seed"]+version*cfg["batch_size"]+i, version,
+        seed = cfg["seed"]+version*cfg["batch_size"]+i
+        if simulate:
+            rid = x.get("rid", rid)
+            seed = x.get("seed", seed)
+        rows.append(Row(rid, ids, route, seed, version,
                         i % cfg["groups"], limit, top_k=cfg.get("teacher_top_k", 0),
                         train_on_length=cfg.get("train_on_length", False)))
     return rows
@@ -98,7 +102,8 @@ def replay_inputs(path, cfg):
                 or (truncated and length != limit)):
             raise ValueError(f"replay response is incompatible with its token limit in {path}")
         inputs.append(dict(prompt_len=len(x["prompt"]), teacher=x["teacher"],
-                           target=length + int(truncated), max_new_tokens=limit))
+                           target=length + int(truncated), max_new_tokens=limit,
+                           **{key: x[key] for key in ("rid", "seed") if key in x}))
     return inputs
 
 

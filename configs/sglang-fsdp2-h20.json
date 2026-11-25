@@ -6,7 +6,7 @@
   "preflight_heterogeneous_teachers": true,
   "warm_teachers": true,
   "teachers_per_group": 1,
-  "policy": "merge",
+  "policy": "cost_search",
   "cluster": {"transport": "local"},
   "model_root": "models",
   "student": "Qwen2.5-7B-Instruct",

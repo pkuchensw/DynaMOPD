@@ -1,8 +1,10 @@
 """Virtual-time executor using SimRL rollout/scoring costs and its KV block manager."""
 import heapq
+import random
 import math
 from .score_cache import trim_score_cache
-from .sim_profile import SwitchState, decode_roofline, engine_classes, fitted_switch, train_seconds
+from .sim_profile import (SwitchState, decode_duration, decode_features, decode_roofline, decode_windows, rpc_decode_features, engine_classes,
+                          fitted_switch, train_seconds, teacher_lease_window)
 from itertools import count
 
 from srl.component.rollout.engine.kv.manager import KvCacheManager
@@ -22,6 +24,8 @@ class Simulator:
         raise ValueError("SimRL does not restore model checkpoints")
 
     def __init__(self, cfg):
+        if cfg.get("sim_execution_profile") is not None:
+            cfg = dict(cfg, sim_worker_profile=cfg["sim_execution_profile"])
         self.cfg = cfg
         nodes = requested_nodes(cfg) or ("sim",)*cfg["groups"]
         width = cfg.get("group_size", 1)
@@ -42,6 +46,9 @@ class Simulator:
         self.leased_teachers = (cfg.get("engine") == "sglang_fsdp2" and
                                 cfg.get("sim_teacher_lifecycle", "lease") == "lease")
         self.profile = cfg.get("sim_worker_profile", {})
+        self.timing_rng = {}
+        self.teacher_costs = {k: ScoringCost(launch_s=base, token_s=slope)
+                              for k, (base, slope) in self.profile.get("score", {}).items()}
         self.tail_tp = None
         self.tp_pair = None
         self.tp_prefix_tokens = 0
@@ -63,10 +70,13 @@ class Simulator:
             self.tail_tp = TailTP(cfg, self.placements, blocks*self.managers[0][0].block_size)
             self.rollout = self.tail_tp.models[width]
         self.reqs = [{} for _ in self.managers]
+        self.owned = [{} for _ in self.managers]
         self.caches = [{} for _ in self.managers]
         self.roles = ["cold"]*cfg["groups"]
         self.teacher_ready_at = [0.] * cfg["groups"]
         self.teacher_prepare_s = self.profile.get("teacher_prepare_s", cfg.get("sim_teacher_prepare_s", 0.))
+        if not cfg.get("preload_teacher_imports", True):
+            self.teacher_prepare_s = 0.
         self.prepared = [set(warm_teacher_routes(cfg, i)) for i in range(cfg["groups"])]
         aliases = {name for name, path in cfg["teachers"].items() if path == cfg.get("student")
                    and cfg.get("share_student_teacher_engine", True)}
@@ -85,8 +95,11 @@ class Simulator:
                        for names in self.prepared]
         historical = self.profile.get("lifecycle") == "restart" and self.leased_teachers
         activation_prior = c["switch"] if historical else cfg.get("sim_teacher_start_s", c["switch"])
-        self.activation_s = {name: cfg.get("sim_teacher_activation_s", {}).get(
+        measured_activation = dict(cfg.get("sim_teacher_activation_s", {}), **self.profile.get("teacher_activation_s", {}))
+        self.activation_s = {name: measured_activation.get(
             name, activation_prior) for name in self.dedicated}
+        preflight = cfg.get("sim_preflight_activation_s", {})
+        self.group_activation = [dict(self.activation_s, **preflight.get(str(i), {})) for i in range(cfg["groups"])]
         if self.leased_teachers:
             self.prepared = [set(cfg["teachers"]) for _ in self.roles]
             self.parked = [set() for _ in self.roles]
@@ -135,13 +148,57 @@ class Simulator:
         for item in a.payload["items"]:
             lanes[self.lane(item)].append(item)
         updates, durations = {}, []
-        for items in lanes:
-            if items:
-                dt, changed = self.decode_lane(a, items)
-                durations.append(dt)
+        hits, evicted, waves = {}, [], []
+        for lane, items in enumerate(lanes):
+            manager = self.managers[a.gpu][lane]
+            pages = manager.num_used_blocks + manager.num_free_blocks
+            entries = ((x, len(x["prompt"])+len(x["tokens"]), min(a.payload["steps"], x["limit"]-len(x["tokens"])))
+                       for x in items)
+            duration, windows = 0., 0
+            rpc_requests, window_steps = [], []
+            for wave in decode_windows(entries, pages, manager.block_size):
+                batch = [x for x, _ in wave]
+                protected = {x["rid"] for x in batch}
+                cache = self.reqs[a.gpu]
+                missing = sum(max(0, n - (manager.blocks_held(cache[x["rid"]]) if x["rid"] in cache else 0))
+                              for x, n in wave)
+                # Prefixes left by completed chunk RPCs are evictable. Token journals
+                # and sampling ownership survive eviction; a later RPC pays prefill.
+                for rid in list(cache):
+                    if missing <= manager.num_free_blocks:
+                        break
+                    if rid not in protected and self.lanes[a.gpu][rid] == lane:
+                        self.free(a.gpu, rid)
+                        evicted.append(rid)
+                contexts = {x["rid"]: len(x["prompt"])+len(x["tokens"]) for x in batch}
+                for rid in contexts:
+                    req = cache.pop(rid, None)
+                    hits[rid] = req.prefilled if req else 0
+                    if req:
+                        cache[rid] = req
+                dt, changed = self.decode_lane(a, batch)
+                for rid, update in changed.items():
+                    if update["finish"]:
+                        self.owned[a.gpu].pop(rid, None)
+                    else:
+                        self.owned[a.gpu][rid] = lane, contexts[rid]+len(update["tokens"])
+                if ("decode" in self.profile or "decode_rpc" in self.profile) and a.peer is None and not self.wide_managers:
+                    requests = [(contexts[rid], len(update["tokens"]), hits[rid]) for rid, update in changed.items()]
+                    if "decode_rpc" in self.profile:
+                        rpc_requests.extend(requests)
+                        window_steps.append(max(n for _, n, _ in requests))
+                    else:
+                        dt = decode_duration(self.profile["decode"], decode_features(requests))
+                duration += dt
+                windows += 1
                 updates.update(changed)
+            if rpc_requests:
+                duration = decode_duration(self.profile["decode_rpc"], rpc_decode_features(rpc_requests, window_steps))
+            durations.append(duration)
+            waves.append(windows)
         return max(durations), dict(updates=updates, tp_width=self.tail_tp.wide if a.peer is not None else self.tp_size,
-                                    replica_requests=[len(items) for items in lanes])
+                                    replica_requests=[len(items) for items in lanes], cached_tokens=hits,
+                                    rollout_kv_evicted=evicted, replica_decode_windows=waves)
 
     def decode_lane(self, a, active):
         ids, dt = {}, 0.
@@ -181,7 +238,8 @@ class Simulator:
                 elif end == x["limit"]:
                     u["finish"] = "length"
                 if u["finish"]:
-                    self.free(a.gpu, rid)
+                    if rid in self.reqs[a.gpu]:
+                        self.free(a.gpu, rid)
                     if a.peer is not None and not self.wide_managers:
                         self.free(a.peer, rid)
             if self.wide_managers and len(active)==1 and not prefill:
@@ -208,10 +266,15 @@ class Simulator:
         if entering:
             item, = a.payload["items"]
             rid = item["rid"]
-            if self.tp_pair or self.reqs[peer] or set(self.reqs[leader]) != {rid}:
+            if self.tp_pair or self.owned[peer] or set(self.owned[leader]) != {rid}:
                 raise RuntimeError("cannot repartition occupied TP slots")
             context = len(item["prompt"]) + len(item["tokens"]) - 1
-            narrow_context = self.reqs[leader][rid].prefilled
+            rebuild_s = 0.
+            if rid not in self.reqs[leader] and not self.wide_managers:
+                rebuild_s = self.rollout.step_time(context, context*context, 0, 1)
+                self.grow(leader, item, context, a.version)
+            req = self.reqs[leader].get(rid)
+            narrow_context = req.prefilled if req else 0
             if narrow_context > context or (not self.wide_managers and narrow_context != context):
                 raise RuntimeError("tail KV does not match the published prefix")
             if self.wide_managers:
@@ -229,7 +292,7 @@ class Simulator:
             if self.tp_pair != a.devices or (not self.wide_managers and self.reqs[peer].keys() != self.reqs[leader].keys()):
                 raise RuntimeError("TP release does not match the active KV layout")
             if self.wide_managers:
-                context = self.wide_requests[0].prefilled if self.reqs[leader] else 0
+                context = self.wide_requests[0].prefilled if self.owned[leader] else 0
                 for manager,req in zip(self.wide_managers,self.wide_requests,strict=True):
                     manager.free(req)
                 self.wide_requests.clear()
@@ -254,7 +317,10 @@ class Simulator:
                      from_tp=model.base if entering else model.wide, to_tp=model.wide if entering else model.base)
         if not entering:
             self.tp_prefix_tokens = 0
-        return parts["transition_s"], value
+        if entering and rebuild_s:
+            value["source_rebuild_s"] = rebuild_s
+            value["transition_s"] += rebuild_s
+        return value["transition_s"], value
 
     def submit(self, a):
         cfg, gpu, c = self.cfg, a.gpu, self.cfg["costs"]
@@ -266,7 +332,7 @@ class Simulator:
             dt, value = self.resize_tp(a)
         elif a.kind == "switch":
             old = self.roles[gpu]
-            if self.reqs[gpu]:
+            if self.reqs[gpu] or self.owned[gpu]:
                 raise RuntimeError("role change with live rollout KV")
             self.roles[gpu] = p["role"]
             unload, load = cfg.get("sim_switch_s",{}).get(old,{}).get(
@@ -320,14 +386,18 @@ class Simulator:
                     load = 0.
             if cell:
                 unload, load = cell["unload"], cell["load"]
+            if (self.leased_teachers and target in self.dedicated and old != target
+                    and (target in cfg.get("sim_teacher_activation_s", {}) or target in self.profile.get("teacher_activation_s", {}))):
+                # A route-specific GPU activation measurement takes precedence
+                # over a cell that may pool several different teacher models.
+                load = self.activation_s[target]
             standby_wait = 0.
             if self.leased_teachers and self.teacher_prepare_s and old != target:
-                if old in self.dedicated:
-                    released = cfg.get("sim_teacher_release_s", {}).get(old, unload)
-                    self.teacher_ready_at[gpu] = self.clock + released + self.teacher_prepare_s
-                if target in self.dedicated:
-                    standby_wait = max(0., self.teacher_ready_at[gpu] - self.clock - unload)
-                    load += standby_wait
+                released = cfg.get("sim_teacher_release_s", {}).get(old, unload)
+                self.teacher_ready_at[gpu], standby_wait = teacher_lease_window(
+                    self.teacher_ready_at[gpu], self.clock, unload, released, self.teacher_prepare_s,
+                    old in self.dedicated, target in self.dedicated)
+                load += standby_wait
             state.advance(target, cell.get("device") if cell else None)
             dt = unload+load
             value = dict(old=old, new=target, evicted=list(cache), unload_s=unload, load_s=load,
@@ -343,7 +413,14 @@ class Simulator:
             if not self.leased_teachers:
                 value["engine_restarted"] = "|restart|" in keys[0]
             if self.leased_teachers:
-                value["teacher_activation_s"] = dict(self.activation_s)
+                if target in self.dedicated and old != target:
+                    self.group_activation[gpu][target] = load-standby_wait
+                    value["teacher_rank_load_s"] = load
+                value["teacher_activation_s"] = self.group_activation[gpu].copy()
+                if old in self.dedicated and old != target:
+                    value["teacher_rank_release_s"] = cfg.get("sim_teacher_release_s", {}).get(old, unload)
+                if target in self.dedicated:
+                    value["teacher_prepare_s"] = self.teacher_prepare_s
                 if old != target and target in self.dedicated and self.teacher_prepare_s:
                     value.update(standby_wait_s=standby_wait, teacher_rank_load_s=load)
                 value["rollout_engine_restarted"] = False
@@ -376,7 +453,8 @@ class Simulator:
                     position = [(j, -math.log(k)) for j in range(k)]
                     scores[rid]["topk"] = [position]*(end-start)
             lanes, evicted = trim_score_cache(cache, cfg["teacher_kv_tokens"])
-            dt = max(self.teacher.predict(tuple(lane), 1) for lane in lengths if lane)
+            teacher = self.teacher_costs.get(p["teacher"], self.teacher)
+            dt = max(teacher.predict(tuple(lane), 1) for lane in lengths if lane)
             dt += c.get("topk_value_s", 0.) * cfg.get("teacher_top_k", 0) * sum(len(x["labels"]) for x in scores.values())
             value = dict(scores=scores, evicted=evicted, flushed_score_lanes=lanes,
                          inference_tp_size=self.tp_size, replica_requests=[len(lane) for lane in lengths])
@@ -386,9 +464,8 @@ class Simulator:
             for x,n in zip(items, counts, strict=True):
                 by_lane[self.lane(x)].append(n)
             headroom = [sum(n + cfg["quantum"] for n in sizes) for sizes in by_lane]
-            for rid, req in self.reqs[a.peer].items():
-                # A decode request's last sampled token has not entered the KV yet.
-                headroom[self.lanes[a.peer][rid]] += req.prefilled + 1 + cfg["quantum"]
+            for lane, context in self.owned[a.peer].values():
+                headroom[lane] += context + cfg["quantum"]
             managers = self.managers[a.peer]
             limits = [min(cfg.get("engine_kv_tokens", 131072),
                           (m.num_free_blocks + m.num_used_blocks)*m.block_size) for m in managers]
@@ -400,19 +477,28 @@ class Simulator:
             if self.placements[gpu].node != self.placements[a.peer].node:
                 dt += c.get("cross_node_move_s", 0.)
             if accepted:
+                deferred = p.get("rebuild") == "on_decode"
                 for x,n in zip(items, counts, strict=True):
-                    self.grow(a.peer, x, n-1, a.version)
-                    self.free(gpu, x["rid"])
+                    if not deferred:
+                        self.grow(a.peer, x, n-1, a.version)
+                    if x["rid"] in self.reqs[gpu]:
+                        self.free(gpu, x["rid"])
+                    self.owned[gpu].pop(x["rid"])
+                    self.owned[a.peer][x["rid"]] = self.lane(x), n
                 install = max(self.rollout.step_time(sum(sizes), sum(n*n for n in sizes), 0, len(sizes))
                               for sizes in by_lane if sizes)
                 if "move_install" in self.profile:
                     base, slope = self.profile["move_install"]
                     install = base + slope * sum(counts)
+                if deferred:
+                    install = 0.
                 value.update(install_start=self.clock + dt, install_end=self.clock + dt + install,
                              source_node=self.placements[gpu].node, destination_node=self.placements[a.peer].node)
                 dt += install
-                value.update(rebuilt_tokens=sum(counts), kv_bytes=sum(counts)*cfg["kv_bytes_per_token"],
-                             kv_transfer_bytes=0, transfer="seed_position_and_reprefill")
+                rebuilt = 0 if deferred else sum(counts)
+                value.update(rebuilt_tokens=rebuilt, kv_bytes=rebuilt*cfg["kv_bytes_per_token"], kv_transfer_bytes=0,
+                             deferred_context_tokens=sum(counts) if deferred else 0,
+                             transfer="seed_position_then_decode" if deferred else "seed_position_and_reprefill")
         elif a.kind == "train":
             tokens = sum(len(x["tokens"]) for x in items)
             self.train_tokens[gpu] += tokens
@@ -444,6 +530,19 @@ class Simulator:
             raise ValueError(a.kind)
         # SGLang reserves its KV pool up front. Free CUDA bytes and free
         # radix blocks are independent constraints on an incoming handoff.
+        timing_key = "score/"+p["teacher"] if a.kind == "score" else a.kind
+        ratios = self.profile.get("service_ratios", {}).get(timing_key)
+        if cfg.get("sim_timing_seed") is not None and ratios and a.peer is None:
+            stream = gpu, timing_key
+            if stream not in self.timing_rng:
+                self.timing_rng[stream] = random.Random(f"{cfg['sim_timing_seed']}/{gpu}/{timing_key}")
+            # Linear interpolation between empirical quantiles; each group and
+            # operation has an independent stream for paired policy replays.
+            q = self.timing_rng[stream].random()*(len(ratios)-1)
+            i = int(q)
+            ratio = ratios[i]+(q-i)*(ratios[min(i+1,len(ratios)-1)]-ratios[i])
+            value.update(nominal_service_s=dt, service_ratio=ratio)
+            dt *= ratio
         value["kv_used_blocks"] = sum(m.num_used_blocks for m in self.managers[gpu])
         value["kv_free_blocks"] = sum(m.num_free_blocks for m in self.managers[gpu])
         if a.peer is not None:

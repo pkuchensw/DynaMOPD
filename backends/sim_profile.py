@@ -21,6 +21,42 @@ def decode_roofline(cfg):
     return dict(defaults, **cfg.get("sim_decode_roofline", {}))
 
 
+def decode_features(requests):
+    """One parallel SGLang lane, with (initial context, output steps, cached input) per request."""
+    ticks = tokens = attention = prefill = 0
+    for context, steps, cached in requests:
+        ticks = max(ticks, steps)
+        tokens += steps
+        attention += steps * context + steps * (steps - 1) // 2
+        prefill += max(0, context - cached)
+    return (int(ticks > 0), ticks, tokens, attention, prefill)
+
+
+def decode_duration(coefficients, features):
+    return sum(c * x for c, x in zip(coefficients, features, strict=True))
+
+
+def rpc_decode_features(requests, window_steps):
+    features = decode_features(requests)
+    return (*features, max(0, sum(window_steps) - features[1]))
+
+
+def decode_windows(entries, pages, page_size):
+    """Partition one lane at its KV capacity using visible prefix and requested output quota."""
+    window, used = [], 0
+    for item, context, quota in entries:
+        needed = (context + quota - 1 + page_size - 1) // page_size
+        if needed > pages:
+            raise MemoryError("one rollout context and its decode quota exceed the lane's KV capacity")
+        if used + needed > pages:
+            yield window
+            window, used = [], 0
+        window.append((item, needed))
+        used += needed
+    if window:
+        yield window
+
+
 def train_width(lengths, cfg):
     """Critical rank input tokens, matching FSDP2 packed or padded rank assignment."""
     world = cfg.get("group_size", 1)
@@ -38,7 +74,8 @@ def switch_keys(old, new, phase, engine_action, resident, owner, teachers):
     """Back off within the same publication/engine mechanism, never across a restart or lease."""
     a, b = ("teacher" if role in teachers else role for role in (old, new))
     prefix = (phase, engine_action)
-    for suffix in ((old, new, resident, owner), (a, b, resident, owner), (a, b, owner),
+    specific = ((a, new, resident, owner), (old, new), (a, new), (new,)) if new in teachers else ()
+    for suffix in ((old, new, resident, owner), *specific, (a, b, resident, owner), (a, b, owner),
                    (a, b), (b,)):
         yield "|".join(map(str, prefix + suffix))
 
@@ -50,6 +87,7 @@ class SwitchState:
         self.engine = classes["rollout"]
         self.resident = False
         self.wake_calibrated = bool(cfg.get("calibrate_engine_wake"))
+        self.teacher_ready_at = 0.
 
     def release_key(self, old, publish, owner):
         if publish and old == "train":
@@ -87,6 +125,13 @@ def fitted_switch(profile, keys, release_key=None):
             release = profile.get("trainer_release", {}).get(release_key)
             return key, dict(cell, **release) if release else cell
     return None, None
+
+
+def teacher_lease_window(ready_at, start, unload, release, prepare, leaving, entering):
+    """Ready time of the CPU replacement rank and wait exposed after unloading."""
+    if leaving:
+        ready_at = start + release + prepare
+    return ready_at, max(0., ready_at - start - unload) if entering else 0.
 
 
 def fit_line(points):

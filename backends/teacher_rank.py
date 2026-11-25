@@ -214,7 +214,8 @@ def prepared_rank(link):
         contexts = standby_context_count()
         if contexts or torch.cuda.is_initialized():
             raise RuntimeError("teacher imported a CUDA context before receiving its lease")
-        link.send(dict(standby=True, pid=os.getpid(), primary_contexts=contexts))
+        link.send(dict(standby=True, pid=os.getpid(), primary_contexts=contexts,
+                       ready_at=time.monotonic()))
         cfg = link.recv()
         if tuple(cfg["devices"]) != tuple(spec["devices"]) or cfg["rank"] != spec["rank"]:
             raise RuntimeError("teacher preparation and lease disagree on device placement")

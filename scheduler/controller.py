@@ -1,9 +1,9 @@
 """Single writer for trajectory progress, GPU leases, action receipts, and version commits."""
 from collections import defaultdict
+from bisect import bisect_right, insort
 import json
 import math
 from pathlib import Path
-import statistics
 
 from .protocol import Action, Costs, Group, validate_batch_receipt
 from .base import PlanningState, SchedulingPolicy
@@ -29,6 +29,7 @@ class Controller:
         self.groups = [Group(i) for i in range(cfg["groups"])]
         self.cost = Costs(cfg)
         self.history = defaultdict(list)
+        self.prior_lengths = {}
         self.max_length_ema = None
         self.live_count = 0
         self.next_work = {}
@@ -62,8 +63,14 @@ class Controller:
         # A request can outlive the forecast. Then use its conditional residual again.
         if self.live_count == 1 and self.max_length_ema is not None and current < self.max_length_ema:
             return min(row.limit-current, max(1., self.max_length_ema-current))
-        seen = [length-current for length in self.history[row.teacher] if length > current]
-        estimate = statistics.median(seen) if seen else self.cfg["tail_prior"]
+        seen = self.history[row.teacher]
+        start = bisect_right(seen, current)
+        middle = (start + len(seen)) // 2
+        if start < len(seen):
+            lower = (start + len(seen) - 1) // 2
+            estimate = (seen[lower]+seen[middle])/2-current
+        else:
+            estimate = self.cfg["tail_prior"]
         return min(row.limit-current, max(1., estimate))
 
     def emit(self, event, **fields):
@@ -153,6 +160,16 @@ class Controller:
             return
         if self.tp_pair and set(a.devices).intersection(self.tp_pair):
             raise RuntimeError("wide TP layout must be released before reassigning either group")
+        if a.kind == "prepare_teacher":
+            g, role = self.groups[a.gpu], a.payload["teacher"]
+            if (role not in self.cfg["teachers"] or a.peer is not None or g.busy or g.role == role
+                    or a.gpu in self.training_groups or a.gpu in self.next_work
+                    or a.gpu in self.holds or a.gpu in self.holds.values()
+                    or any(r.owner == a.gpu and not r.finish for r in self.rows.values())
+                    or (self.cfg.get("phase_barriers") and any(not r.finish for r in self.rows.values()))):
+                raise RuntimeError("teacher preparation requires a free drained group")
+            self.submit(Action("switch", a.gpu, a.version, {"role": role}))
+            return
         if a.kind == "standby":
             g = self.groups[a.gpu]
             if (a.peer is not None or g.busy or g.role not in g.teacher_activation_s or
@@ -195,6 +212,11 @@ class Controller:
             role = a.payload.get("teacher", "train")
             if a.kind == "score" and a.gpu in self.training_groups:
                 raise RuntimeError("cannot release uncommitted gradients for scoring")
+            if a.kind == "score" and self.groups[a.gpu].role != role:
+                # Acquire only the engine lease. A resident replica can still serve
+                # these prefixes while this group loads; replan on its ready receipt.
+                self.submit(Action("switch", a.gpu, a.version, {"role": role}))
+                return
             if a.kind == "train" and a.gpu not in self.training_groups:
                 claimed = self.training_groups | {a.gpu}
                 if self.trainer is not None:
@@ -248,6 +270,11 @@ class Controller:
         if a.peer is not None and "peer_free_bytes" in value:
             self.groups[a.peer].free_bytes = value["peer_free_bytes"]
         summary = {k:v for k,v in value.items() if k not in ("updates", "scores")}
+        if a.kind == "decode":
+            delayed = {x["rid"]: len(x["prompt"])+len(x["tokens"]) for x in a.payload["items"]
+                       if self.rows[x["rid"]].deferred_prefill}
+            if delayed:
+                summary["migration_prefill_contexts"] = delayed
         self.emit("complete", op=a.kind, gpu=a.gpu, peer=a.peer, start=receipt["start"],
                   end=receipt["end"], role=g.role, free_bytes=g.free_bytes, **summary)
         for rid in value.get("evicted", []):
@@ -260,6 +287,15 @@ class Controller:
             for rid in value.get("peer_evicted", []):
                 self.rows[rid].kv.pop(a.peer, None)
         elif a.kind == "switch":
+            if value.get("teacher_prepare_s") is not None:
+                self.cost.observe("teacher_prepare", value["teacher_prepare_s"])
+            if "teacher_rank_release_s" in value:
+                prior = self.cfg.get("sim_worker_profile", {}).get("teacher_prepare_s",
+                                                               self.cfg.get("sim_teacher_prepare_s", 0.))
+                g.teacher_ready_at = (receipt["start"] + value["teacher_rank_release_s"]
+                                      + self.cost.values.get("teacher_prepare", prior))
+                if not value.get("teacher_prepare_enabled", self.cfg.get("preload_teacher_imports", True)):
+                    g.teacher_ready_at = 0.
             first_load = (g.prepared_teachers is not None and value["new"] in self.cfg["teachers"]
                           and value["new"] not in g.prepared_teachers)
             if "prepared_teachers" in value:
@@ -268,6 +304,8 @@ class Controller:
                 g.teacher_start_s = value["teacher_start_s"]
                 g.teacher_activation_s = value.get("teacher_activation_s", {})
             if "teacher_rank_load_s" in value:
+                self.cost.observe(("teacher_gpu_activation", value["new"]),
+                                  value["teacher_rank_load_s"]-value.get("standby_wait_s", 0.))
                 self.cost.observe(("before_teacher", value["old"], value["new"], g.trainer_resident,
                                    g.gpu == self.trainer), value["unload_s"])
             if value.get("engine_restarted"):
@@ -299,13 +337,14 @@ class Controller:
                 row = self.rows[rid]
                 if row.owner != g.gpu or row.version != a.version:
                     raise RuntimeError("stale decode owner")
+                row.deferred_prefill = False
                 row.prefix(**update)
                 if row.pending_since is None:
                     row.pending_since = self.backend.now()
                 if row.finish:
                     self.live_count -= 1
                 if row.finish == "eos":
-                    self.history[row.teacher].append(len(row.tokens))
+                    insort(self.history[row.teacher], len(row.tokens))
                 self.emit("prefix", rid=rid, gpu=g.gpu, end=len(row.tokens), start=update["start"],
                           finish=row.finish, teacher=row.teacher)
             if a.peer is None:
@@ -313,8 +352,12 @@ class Controller:
             if not any(r.owner==g.gpu and not r.finish for r in self.rows.values()):
                 self.emit("group_drained", gpu=g.gpu, cause="natural")
         elif a.kind == "score":
+            group_size = self.cfg.get("group_size", 1)
+            lanes = group_size // self.cfg.get("inference_tp_size", group_size)
+            loads = [0] * lanes
             for rid, score in value["scores"].items():
                 row = self.rows[rid]
+                loads[row.seed // len(self.groups) % lanes] += max(1, len(row.prompt)+score["end"]-1-score["reused"])
                 keep = score["retained"] and rid not in value.get("evicted", [])
                 row.deliver(score["start"], score["end"], score["labels"], g.gpu, keep, score.get("topk"))
                 if len(row.labels)==len(row.tokens):
@@ -324,6 +367,7 @@ class Controller:
                           cached_on=row.kv, ready=row.ready)
             self.cost.observe("score_token", duration/sum(len(x["tokens"])-x["start"] for x in items))
             self.cost.observe("score_base", min(duration, self.cost.get("score_base")*2))
+            self.cost.observe_score(a.payload["teacher"], max(loads), duration)
         elif a.kind == "move":
             if value["accepted"]:
                 install = value.get("install_end", receipt["end"]) - value.get("install_start", receipt["start"])
@@ -335,6 +379,7 @@ class Controller:
                     self.cost.observe("move_base", max(0.,duration-install-penalty))
                 for x in items:
                     self.rows[x["rid"]].owner = a.peer
+                    self.rows[x["rid"]].deferred_prefill = a.payload.get("rebuild") == "on_decode"
                 self.emit("group_drained", gpu=g.gpu, cause="migration", new_owner=a.peer,
                           ids=[x["rid"] for x in items])
             else:
@@ -374,6 +419,9 @@ class Controller:
     def run_round(self, rows, version):
         self.version = version
         self.rows = {r.rid:r for r in rows}
+        # Early completions within the current round are right-censored towards
+        # short responses. Freeze completed-round distributions at publication.
+        self.prior_lengths = {role: tuple(lengths) for role, lengths in self.history.items()}
         self.live_count = len(rows)
         if (len(self.rows) != len(rows) or set(r.owner for r in rows) != set(range(len(self.groups)))
                 or any(r.version != version for r in rows)):

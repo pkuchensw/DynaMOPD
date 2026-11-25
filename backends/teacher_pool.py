@@ -38,6 +38,8 @@ class TeacherRanks:
         self.device_type = tuple((p.get("name"), p.get("major"), p.get("minor")) for p in (properties or []))
         self.preload = cfg.get("preload_teacher_imports", True) and properties is not None
         self.waiting = False
+        self.released_at = None
+        self.preparation_s = None
         self.timeout = cfg.get("startup_timeout", 1200)
         env = dict(os.environ, CUDA_VISIBLE_DEVICES="", OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
                    MKL_NUM_THREADS="1", TOKENIZERS_PARALLELISM="false")
@@ -74,6 +76,8 @@ class TeacherRanks:
             self.standby_contexts = [r["primary_contexts"] for r in replies]
             if any(self.standby_contexts):
                 raise RuntimeError("a CPU-prepared teacher acquired CUDA before its lease")
+            if self.released_at is not None:
+                self.preparation_s = max(0., max(r["ready_at"] for r in replies) - self.released_at)
         self.waiting = False
 
     def receive(self, rank):
@@ -173,10 +177,11 @@ class TeacherRanks:
                 min(free, math.ceil(max(0, free-left) / fraction)) + self.cfg["memory_margin"]
                 for free, left in zip(before, after, strict=True)
             ]
-        self.activation_s[role] = load_s
+        self.activation_s[role] = load_s - (prepared_at-began)
         return dict(teacher_nvml_pids=new_pids, standby_cuda_contexts=self.standby_contexts,
                     teacher_kv_capacity=capacity, teacher_required_free_bytes=self.required_free_bytes[role],
                     teacher_rank_load_s=load_s, standby_wait_s=prepared_at-began, teacher_alignment_s=alignment_s,
+                    teacher_prepare_s=self.preparation_s,
                     teacher_load_format=load_format, teacher_image_build_s=build_s, teacher_image_built=built,
                     teacher_image_write_error=build_error,
                     teacher_rank_pids=list(self.active_pids),
@@ -239,13 +244,15 @@ class TeacherRanks:
         self.host_baseline = []
         self.active_pids = []
         self.waiting = bool(self.preload)
+        self.released_at = time.monotonic()
         self.role = None
         self.directory.cleanup()
         self.directory = None
         return dict(released_teacher_pids=pids, released_teacher_nvml_pids=host_pids, late_teacher_nvml_pids=sorted(late_pids),
                     reaped_teacher_helpers=helpers,
                     teacher_gpu_ranks_after_release=len(self.active_pids),
-                    release_nvml_checked=nvml_verified, teacher_rank_release_s=time.monotonic()-start)
+                    release_nvml_checked=nvml_verified, teacher_prepare_enabled=self.preload,
+                    teacher_rank_release_s=time.monotonic()-start)
 
     def compute_pids(self):
         import pynvml

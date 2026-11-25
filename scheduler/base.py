@@ -17,6 +17,7 @@ class PlanningState:
         self.groups = tuple(controller.groups)
         self.placements = tuple(controller.backend.placements)
         self.rows = MappingProxyType(controller.rows)
+        self.prior_lengths = MappingProxyType(controller.prior_lengths)
         self.queued_work = MappingProxyType(controller.next_work)
         self.holds = MappingProxyType(controller.holds)
         self.rejected_moves = MappingProxyType(controller.rejected_moves)

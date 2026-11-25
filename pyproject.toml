@@ -21,6 +21,7 @@ gpu = [
 cluster = ["ray>=2.54,<3"]
 packed = ["flash-attn==2.8.1"]
 parquet = ["pyarrow"]
+calibration = ["numpy", "scipy"]
 
 wandb = ["wandb>=0.18"]
 swanlab = ["swanlab>=0.6"]

@@ -84,6 +84,8 @@ def build_job(config, *, simulate, replay, resume_version):
     if type(cfg["train_on_length"]) is not bool:
         raise ValueError("train_on_length must be a boolean")
     cfg.setdefault("policy", "merge")
+    if cfg.get("length_forecast", "conditional_median") not in {"conditional_quantiles", "conditional_median"}:
+        raise ValueError("unknown length_forecast")
     alpha = cfg.setdefault("max_length_ema_alpha", 0.2)
     if alpha is not None and (type(alpha) not in (int, float) or not 0 < alpha <= 1):
         raise ValueError("max_length_ema_alpha must be in (0, 1] or null to disable")

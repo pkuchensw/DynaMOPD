@@ -57,6 +57,7 @@ class Row:
     top_k: int = 0
     teacher_topk: list = field(default_factory=list)
     train_on_length: bool = False
+    deferred_prefill: bool = False
 
     @property
     def discarded(self):
@@ -122,12 +123,14 @@ class Group:
     cached_teacher_weights: frozenset = frozenset()
     teacher_start_s: float = 0.
     teacher_activation_s: dict = field(default_factory=dict)
+    teacher_ready_at: float = 0.
 
 
 class Costs:
     """Exponentially weighted completed-action observations, in seconds."""
     def __init__(self, cfg):
         self.values = dict(cfg["costs"])
+        self.score_samples = {}
         self.values.setdefault("teacher_wake", self.values["score_base"])
         self.values.setdefault("replica_reduce", self.values["switch"])
 
@@ -136,6 +139,22 @@ class Costs:
 
     def switch(self, old, new):
         return self.values.get((old, new), self.get("switch"))
+
+    def observe_score(self, teacher, tokens, seconds):
+        if tokens <= 0 or seconds <= 0 or not math.isfinite(seconds):
+            return
+        n, x, y, xx, xy = self.score_samples.get(teacher, (0, 0., 0., 0., 0.))
+        n += 1
+        dx, dy = tokens - x, seconds - y
+        x, y = x + dx/n, y + dy/n
+        self.score_samples[teacher] = n, x, y, xx + dx*(tokens-x), xy + dx*(seconds-y)
+
+    def score_coefficients(self, teacher, prior):
+        if teacher not in self.score_samples:
+            return prior
+        _, x, y, xx, xy = self.score_samples[teacher]
+        slope = max(0., min(y/x, xy/xx)) if xx > 0. else y/x
+        return max(0., y-slope*x), slope
 
     def observe(self, name, value):
         if math.isfinite(value) and value > 0:

@@ -277,6 +277,9 @@ class Inference:
 
 
     def install(self, engine, p):
+        rebuild = p.get("rebuild", "eager")
+        if rebuild not in ("eager", "on_decode"):
+            raise ValueError("unknown migration prefill mode")
         items = p["items"]
         for x in items:
             if x["rid"] in self.owned or p["rng"][x["rid"]] != self.sampling_state(x):
@@ -293,6 +296,12 @@ class Inference:
             capacity = sum(min(s.capacity, self.cfg["engine_kv_tokens"]) for s in engine.servers)
         if not fits:
             return dict(accepted=False,required_kv_tokens=needed,capacity_tokens=capacity)
+        if rebuild == "on_decode":
+            # SGLang's next generate RPC includes the whole committed prefix.
+            # Admit the exact sampling state before the source lease is released.
+            self.owned.update(p["rng"])
+            return dict(accepted=True, rebuilt_tokens=0, deferred_context_tokens=sum(contexts), kv_bytes=0,
+                        kv_transfer_bytes=0, capacity_tokens=capacity, transfer="seed_position_then_decode")
         reply = engine.batch(items, dict(max_new_tokens=0), return_logprob=False)
         hits = [meta["cached_tokens"] for _,_,meta in reply]
         self.owned.update(p["rng"])

@@ -46,7 +46,8 @@ def fit(folder, version):
                 observations[("release", e["old"])].append(e["teacher_rank_release_s"])
             ranks = e.get("teacher_rank_timings", [])
             if ranks and all("prepared_import_s" in r for r in ranks):
-                observations["prepare"].append(max(r["prepared_import_s"] for r in ranks))
+                measured = e.get("teacher_prepare_s")
+                observations["prepare"].append(measured if measured is not None else max(r["prepared_import_s"] for r in ranks))
             if "teacher_rank_load_s" in e:
                 activation[e["new"]].append(max(0., e["teacher_rank_load_s"] - wait))
             if e.get("teacher_start_s"):
