@@ -1,0 +1,16 @@
+{"prompt":[{"role":"user","content":"Reply with just the numeral for two plus two."}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Answer yes or no. Is three a prime number?"}],"teacher":"gsm8k"}
+{"prompt":[{"role":"user","content":"Explain how to derive the quadratic formula by completing the square, showing every step."}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Write a detailed proof that there are infinitely many prime numbers, then give an alternative proof."}],"teacher":"gsm8k"}
+{"prompt":[{"role":"user","content":"List the first twenty squares and explain the pattern between consecutive squares."}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Derive the sum of cubes identity in two different ways and work three numerical examples."}],"teacher":"gsm8k"}
+{"prompt":[{"role":"user","content":"In one sentence, what is a prime number?"}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"What number comes immediately after 9? Reply only with that number."}],"teacher":"gsm8k"}
+{"prompt":[{"role":"user","content":"Say OK."}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Reply only with the product of three and four."}],"teacher":"gsm8k"}
+{"prompt":[{"role":"user","content":"What is seven minus two? Reply only with a number."}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Answer with one word. Is an octagon a polygon?"}],"teacher":"gsm8k"}
+{"prompt":[{"role":"user","content":"Translate 'one' into French. Reply with the word."}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Say 'hello'."}],"teacher":"gsm8k"}
+{"prompt":[{"role":"user","content":"Write a worked example of using induction to prove a divisibility result."}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Explain why the square root of two is irrational and why the same argument works for three."}],"teacher":"gsm8k"}

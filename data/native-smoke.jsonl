@@ -1,0 +1,8 @@
+{"prompt":[{"role":"user","content":"Reply only with the number three."}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Prove the quadratic formula by completing the square. Give two worked examples."}],"teacher":"general"}
+{"prompt":[{"role":"user","content":"Give a detailed proof of the Chinese remainder theorem and solve a three-modulus example."}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Develop the Euclidean algorithm, prove its correctness, and give three examples with all intermediate steps."}],"teacher":"general"}
+{"prompt":[{"role":"user","content":"What is 5+2? Reply only with the number."}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Reply only with the word yes."}],"teacher":"general"}
+{"prompt":[{"role":"user","content":"Answer in one word. Is 11 prime?"}],"teacher":"math"}
+{"prompt":[{"role":"user","content":"Explain how to derive Newton's identities and use them to compute the fifth power sum of four roots."}],"teacher":"general"}

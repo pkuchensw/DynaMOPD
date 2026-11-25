@@ -1,0 +1,654 @@
+{
+  "algorithm": "on_policy_k1",
+  "train_on_length": true,
+  "inference_layout": "single",
+  "teacher_rank_images": true,
+  "warm_teachers": false,
+  "teachers_per_group": 1,
+  "policy": "cost_search",
+  "cluster": {
+    "transport": "local"
+  },
+  "model_root": "models",
+  "student": "Qwen2.5-7B-Instruct",
+  "teachers": {
+    "general": "Qwen2.5-14B",
+    "math": "Qwen2.5-Math-7B",
+    "instruction": "Qwen2.5-7B-Instruct"
+  },
+  "groups": 4,
+  "rounds": 4,
+  "batch_size": 512,
+  "quantum": 256,
+  "score_chunk": 256,
+  "score_batch": 24,
+  "score_budget": 28672,
+  "teacher_kv_tokens": 32768,
+  "decode_batch": 192,
+  "microbatch": 16,
+  "train_budget": 24576,
+  "max_new_tokens": 8192,
+  "max_prompt": 2048,
+  "temperature": 1,
+  "lr": 1e-06,
+  "clip": 1,
+  "seed": 42,
+  "tail_prior": 640,
+  "kv_bytes_per_token": 57344,
+  "memory_margin": 1073741824,
+  "costs": {
+    "switch": 2.114926941692829,
+    "score_base": 0.5529267878605562,
+    "score_token": 4.7389898367302014e-05,
+    "decode_step": 0.013770484227279667,
+    "prefill_token": 8.050655327056244e-05,
+    "train_token": 0.00028864733532257364,
+    "move_base": 0.00788785144686699
+  },
+  "engine": "sglang_fsdp2",
+  "weight_sync": "tensor",
+  "trainer_residency": "auto",
+  "weight_bucket_mib": 2048,
+  "checkpoint_interval": 4,
+  "group_size": 2,
+  "engine_kv_tokens": 65536,
+  "activation_checkpointing": true,
+  "checkpoint_contents": [
+    "hf_model"
+  ],
+  "hf_checkpoint_dtype": "float32",
+  "trainer_attention": "flash_attention_2",
+  "cuda_graph": true,
+  "inference_tp_size": 1,
+  "max_train_groups": 4,
+  "qwen2_dynamic_rope": true,
+  "mem_fraction_static": 0.45,
+  "phase_barriers": false,
+  "rollout_sampling_mode": "batch_invariant",
+  "frozen_teacher_tensor_sync": true,
+  "calibrate_engine_wake": true,
+  "benchmark_devices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "verl_teacher_gpus": 4,
+  "kdflow_keep_optimizer": true,
+  "kdflow_synchronous_teacher": true,
+  "benchmark_systems": [
+    "dynamopd",
+    "kdflow"
+  ],
+  "sglang_limits": {
+    "max_running_requests": 128,
+    "cuda_graph_max_bs": 128,
+    "max_prefill_tokens": 16384,
+    "chunked_prefill_size": -1
+  },
+  "sim_worker_profile": {
+    "switches": {
+      "initial|warm|cold|rollout|False|False": {
+        "unload": 5.059223622083664e-05,
+        "load": 1.9730068743228912e-05,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "initial|warm|cold|rollout|False": {
+        "unload": 5.059223622083664e-05,
+        "load": 1.9730068743228912e-05,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "initial|warm|rollout": {
+        "unload": 5.059223622083664e-05,
+        "load": 1.9730068743228912e-05,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "initial|warm|cold|rollout": {
+        "unload": 5.059223622083664e-05,
+        "load": 1.9730068743228912e-05,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "service|warm|rollout|teacher": {
+        "unload": 0.00012526661157608032,
+        "load": 1.9795151446014643,
+        "sync": 0.0,
+        "device": null,
+        "n": 5
+      },
+      "service|warm|rollout|teacher|False|False": {
+        "unload": 0.00011202692985534668,
+        "load": 2.054150750860572,
+        "sync": 0.0,
+        "device": null,
+        "n": 3
+      },
+      "service|warm|rollout|math|False|False": {
+        "unload": 0.0015374701470136642,
+        "load": 2.1729666627943516,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|rollout|teacher|False": {
+        "unload": 0.00012526661157608032,
+        "load": 1.9795151446014643,
+        "sync": 0.0,
+        "device": null,
+        "n": 5
+      },
+      "service|warm|teacher": {
+        "unload": 0.00010231230407953262,
+        "load": 1.333556872792542,
+        "sync": 0.0,
+        "device": null,
+        "n": 18
+      },
+      "service|warm|math|instruction|False|False": {
+        "unload": 5.760788917541504e-05,
+        "load": 2.325194163247943,
+        "sync": 0.0,
+        "device": null,
+        "n": 3
+      },
+      "service|warm|teacher|teacher": {
+        "unload": 8.837878704071045e-05,
+        "load": 1.296001859009266,
+        "sync": 0.0,
+        "device": null,
+        "n": 13
+      },
+      "service|warm|teacher|teacher|False": {
+        "unload": 0.00011593475937843323,
+        "load": 1.3574309665709734,
+        "sync": 0.0,
+        "device": null,
+        "n": 9
+      },
+      "service|warm|teacher|teacher|False|False": {
+        "unload": 6.194785237312317e-05,
+        "load": 2.1771962651982903,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "service|warm|teacher|train|False|True": {
+        "unload": 0.06280050612986088,
+        "load": 3.23986448161304,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|train": {
+        "unload": 0.06503534503281116,
+        "load": 1.9344502929598093,
+        "sync": 0.0,
+        "device": null,
+        "n": 7
+      },
+      "service|warm|teacher|train": {
+        "unload": 0.06351345963776112,
+        "load": 1.9881096119061112,
+        "sync": 0.0,
+        "device": null,
+        "n": 6
+      },
+      "service|warm|teacher|train|True": {
+        "unload": 0.06280050612986088,
+        "load": 3.23986448161304,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|instruction|train|False|True": {
+        "unload": 0.06503534503281116,
+        "load": 2.041768930852413,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|warm|rollout|instruction|False|False": {
+        "unload": 0.00011202692985534668,
+        "load": 2.054150750860572,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|warm|teacher|train|False|False": {
+        "unload": 0.061356944032013416,
+        "load": 2.123180969618261,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|instruction|train|False|False": {
+        "unload": 0.061356944032013416,
+        "load": 2.123180969618261,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|teacher|train|False": {
+        "unload": 0.06834118533879519,
+        "load": 0.9695273097604513,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "service|activate|rollout|general|False|False": {
+        "unload": 0.05832136794924736,
+        "load": 25.94238113798201,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|activate|rollout|teacher": {
+        "unload": 8.014199011959136,
+        "load": 25.436799181625247,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|activate|rollout|teacher|False|False": {
+        "unload": 0.05832136794924736,
+        "load": 25.94238113798201,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|activate|rollout|teacher|False": {
+        "unload": 0.05832136794924736,
+        "load": 25.94238113798201,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|activate|teacher": {
+        "unload": 0.2999230520799756,
+        "load": 25.044765369966626,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "service|release|teacher|teacher|False": {
+        "unload": 0.2795565612614155,
+        "load": 1.9041769001632929,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|release|teacher": {
+        "unload": 0.2538326559588313,
+        "load": 1.37579560931772,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "service|release|general|math|False|False": {
+        "unload": 0.24374213442206383,
+        "load": 2.4635062478482723,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|release|teacher|teacher|False|False": {
+        "unload": 0.2795565612614155,
+        "load": 1.9041769001632929,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|release|teacher|teacher": {
+        "unload": 0.2538326559588313,
+        "load": 1.37579560931772,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "service|activate|teacher|teacher|False": {
+        "unload": 0.0802640076726675,
+        "load": 24.19668845832348,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|activate|instruction|general|False|False": {
+        "unload": 0.0802640076726675,
+        "load": 24.19668845832348,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|activate|teacher|teacher|False|False": {
+        "unload": 0.0802640076726675,
+        "load": 24.19668845832348,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|activate|teacher|teacher": {
+        "unload": 0.2999230520799756,
+        "load": 24.677500986494124,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|release|general|instruction|False|False": {
+        "unload": 0.31537098810076714,
+        "load": 1.3448475524783134,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|warm|instruction|math|False|False": {
+        "unload": 6.62878155708313e-05,
+        "load": 1.0776509083807468,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "publish|warm|teacher|rollout|False": {
+        "unload": 1.0374596863985062,
+        "load": 0.5388560518622398,
+        "sync": 1.0374555177986622,
+        "local_load": 0.10677403770387173,
+        "device": null,
+        "n": 1
+      },
+      "publish|warm|math|rollout|False|False": {
+        "unload": 1.0374596863985062,
+        "load": 0.5388560518622398,
+        "sync": 1.0374555177986622,
+        "local_load": 0.10677403770387173,
+        "device": null,
+        "n": 1
+      },
+      "publish|warm|teacher|rollout|False|False": {
+        "unload": 1.0374596863985062,
+        "load": 0.5388560518622398,
+        "sync": 1.0374555177986622,
+        "local_load": 0.10677403770387173,
+        "device": null,
+        "n": 1
+      },
+      "publish|warm|teacher|rollout": {
+        "unload": 1.0374596863985062,
+        "load": 0.5388560518622398,
+        "sync": 1.0374555177986622,
+        "local_load": 0.10677403770387173,
+        "device": null,
+        "n": 1
+      },
+      "publish|warm|rollout": {
+        "unload": 0.682659768499434,
+        "load": 0.40910244546830654,
+        "sync": 0.5437591364607215,
+        "local_load": 0.14491349458694458,
+        "device": "cuda",
+        "n": 8
+      },
+      "publish|warm|train|rollout|False": {
+        "unload": 0.28293526731431484,
+        "load": 0.41408814303576946,
+        "sync": 0.06383061222732067,
+        "local_load": 0.19165100902318954,
+        "device": "cuda",
+        "n": 5
+      },
+      "publish|warm|train|rollout": {
+        "unload": 0.3278598506003618,
+        "load": 0.4041167479008436,
+        "sync": 0.06383061222732067,
+        "local_load": 0.15977205894887447,
+        "device": "cuda",
+        "n": 7
+      },
+      "publish|warm|train|rollout|False|False": {
+        "unload": 0.28293526731431484,
+        "load": 0.41408814303576946,
+        "sync": 0.06383061222732067,
+        "local_load": 0.19165100902318954,
+        "device": "cuda",
+        "n": 5
+      },
+      "publish|warm|train|rollout|False|True": {
+        "unload": 0.8509455798193812,
+        "load": 0.28849069494754076,
+        "sync": 0.5424208519980311,
+        "local_load": 0.11936668865382671,
+        "device": "cuda",
+        "n": 2
+      },
+      "publish|warm|train|rollout|True": {
+        "unload": 0.8509455798193812,
+        "load": 0.28849069494754076,
+        "sync": 0.5424208519980311,
+        "local_load": 0.11936668865382671,
+        "device": "cuda",
+        "n": 2
+      },
+      "service|warm|rollout|math|True|False": {
+        "unload": 0.00015280582010746002,
+        "load": 1.4429965056478977,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|warm|rollout|teacher|True|False": {
+        "unload": 0.00013903621584177017,
+        "load": 1.323012606240809,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|math|instruction|True|False": {
+        "unload": 0.0002161208540201187,
+        "load": 1.257305989973247,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|teacher|teacher|True|False": {
+        "unload": 0.0003055427223443985,
+        "load": 1.3096827790141106,
+        "sync": 0.0,
+        "device": null,
+        "n": 5
+      },
+      "service|warm|rollout|train|False": {
+        "unload": 0.06784671172499657,
+        "load": 1.6226353142410517,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|warm|rollout|train|False|False": {
+        "unload": 0.06784671172499657,
+        "load": 1.6226353142410517,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|warm|rollout|train": {
+        "unload": 0.06784671172499657,
+        "load": 1.6226353142410517,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|warm|instruction|math|True|False": {
+        "unload": 0.0008503217250108719,
+        "load": 1.3574309665709734,
+        "sync": 0.0,
+        "device": null,
+        "n": 3
+      },
+      "service|warm|math|train|True|False": {
+        "unload": 0.07480419427156448,
+        "load": 0.0045185331255197525,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|teacher|train|True|False": {
+        "unload": 0.07480419427156448,
+        "load": 0.0045185331255197525,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|rollout|instruction|True|False": {
+        "unload": 0.00012526661157608032,
+        "load": 1.2030287068337202,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|activate|rollout|teacher|True|True": {
+        "unload": 15.970076655969024,
+        "load": 24.931217225268483,
+        "sync": 0.0,
+        "device": "cpu",
+        "n": 1
+      },
+      "service|activate|rollout|teacher|True": {
+        "unload": 15.970076655969024,
+        "load": 24.931217225268483,
+        "sync": 0.0,
+        "device": "cpu",
+        "n": 1
+      },
+      "service|activate|rollout|general|True|True": {
+        "unload": 15.970076655969024,
+        "load": 24.931217225268483,
+        "sync": 0.0,
+        "device": "cpu",
+        "n": 1
+      },
+      "service|release|teacher|teacher|True": {
+        "unload": 0.2538326559588313,
+        "load": 1.37579560931772,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|release|general|instruction|False|True": {
+        "unload": 0.2565246745944023,
+        "load": 1.3631084561347961,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|release|teacher|teacher|False|True": {
+        "unload": 0.2538326559588313,
+        "load": 1.37579560931772,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|teacher|teacher|False|True": {
+        "unload": 4.474818706512451e-05,
+        "load": 1.2598710767924786,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "service|warm|instruction|math|False|True": {
+        "unload": 4.450790584087372e-05,
+        "load": 1.2684152880683541,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|warm|teacher|teacher|True": {
+        "unload": 4.474818706512451e-05,
+        "load": 1.2598710767924786,
+        "sync": 0.0,
+        "device": null,
+        "n": 4
+      },
+      "service|warm|math|instruction|False|True": {
+        "unload": 6.661377847194672e-05,
+        "load": 1.2520097251981497,
+        "sync": 0.0,
+        "device": null,
+        "n": 2
+      },
+      "service|activate|teacher|teacher|True": {
+        "unload": 0.5195820964872837,
+        "load": 25.15831351466477,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|activate|teacher|teacher|False|True": {
+        "unload": 0.5195820964872837,
+        "load": 25.15831351466477,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|activate|instruction|general|False|True": {
+        "unload": 0.5195820964872837,
+        "load": 25.15831351466477,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|release|general|math|False|True": {
+        "unload": 0.2511406373232603,
+        "load": 1.3884827625006437,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      },
+      "service|warm|math|train|False|True": {
+        "unload": 0.06056566722691059,
+        "load": 4.437960032373667,
+        "sync": 0.0,
+        "device": null,
+        "n": 1
+      }
+    },
+    "lifecycle": "lease",
+    "trainer_release": {
+      "train|True|False": {
+        "unload": 0.28293526731431484,
+        "device": "cuda"
+      },
+      "train|True|True": {
+        "unload": 0.8509455798193812,
+        "device": "cuda"
+      }
+    },
+    "tensor_collective_s": 0.16746480856090784,
+    "train": [
+      0.19896156745132654,
+      0.0005398309737323484
+    ],
+    "reduce": 0.2466425495222211,
+    "step": 0.36950409784913063,
+    "move_reject": null,
+    "move_base": 0.007945403456687927,
+    "move_install": [
+      0.10839041379759165,
+      5.541932857235542e-05
+    ]
+  },
+  "sim_teacher_lifecycle": "lease",
+  "preflight_heterogeneous_teachers": true,
+  "preload_teacher_imports": true,
+  "mirror_optimizer_on_rollout": true,
+  "mirror_parameters_on_rollout": true
+}

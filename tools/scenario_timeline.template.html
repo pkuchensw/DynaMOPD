@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>八张 GPU 的训练时间线 · DynaMOPD</title>
+<style>
+:root{color-scheme:light;--ink:#162e33;--muted:#51676a;--line:#cbd7d5;--paper:#f3f6f3;--accent:#086a59;--mono:"IBM Plex Mono",Consolas,monospace}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 "Inter","Noto Sans CJK SC","Microsoft YaHei",sans-serif}main,header>div{max-width:1440px;margin:auto;padding:0 clamp(14px,3.8vw,66px)}header{border-bottom:1px solid var(--line);background:#eaf0eb}header>div{min-height:47px;display:flex;align-items:center;justify-content:space-between;gap:12px}header strong{font-size:16px;letter-spacing:.03em}header small,.muted,.sub{color:var(--muted)}h1{margin:.38em 0 .1em;font-size:clamp(30px,4vw,57px);letter-spacing:-.055em;line-height:1.25}h2{font-size:22px;letter-spacing:-.03em;margin:0}h3{font-size:20px;margin:0}p{margin:.45em 0}.intro{padding:14px 0 18px}.intro p{font-size:15px;color:var(--muted)}button,select,input{font:inherit}button,select{border:1px solid var(--line);background:white;color:var(--ink);border-radius:7px;padding:6px 10px;cursor:pointer}button:hover,select:hover{border-color:var(--accent)}button[aria-pressed=true]{background:var(--ink);color:white;border-color:var(--ink)}button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:3px solid #cb8132;outline-offset:2px}button:disabled{opacity:.45;cursor:default}a{color:var(--accent)}.toolbar,.legend,.controls,.steps,.cases,.headrow,.sources,.pager,.filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.toolbar{justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:13px}.cases button{padding:7px 13px;font-size:14px}.steps{font-size:13px}.steps select{padding:6px}.scene-info{margin:12px 0;color:var(--muted)}.headrow{justify-content:space-between;gap:10px}.controls{font-size:13px}.controls input{accent-color:var(--accent);width:95px}.controls button{padding:4px 8px}.num,.metric,.axis text,.trackname,.stamp{font-variant-numeric:tabular-nums}.num,.stamp,.metric{font-family:var(--mono)}.legend{font-size:12px;gap:6px 16px;margin:10px 0}.legend span{display:inline-flex;align-items:center;gap:5px}.dot{width:10px;height:10px;border-radius:2px;display:inline-block}.block{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:8px 0}.chartcard{display:grid;grid-template-columns:200px minmax(0,1fr)}.sysinfo{padding:15px 16px;background:#f9fbf9;border-right:1px solid var(--line)}.sysinfo h3{font-size:22px;line-height:1.2}.metric{font-size:25px;font-weight:600;line-height:1.5}.metric small{font-size:12px;font-weight:400;letter-spacing:0}.sysinfo p,.sub,.hint{font-size:12px;color:var(--muted)}.sysinfo .sub{border-top:1px solid var(--line);padding-top:7px;margin-top:8px}.graph{position:relative;min-width:0;padding:4px 7px 0}.graph svg{width:100%;display:block;touch-action:pan-y}.axis text{fill:#52676c;font:10px var(--mono)}.trackname{fill:#42575c;font-size:11px}.bars{cursor:crosshair}.chartnote{margin:8px 0 15px;font-size:13px;color:var(--muted)}.infozone{padding:15px 18px}.keys{display:flex;gap:6px 8px;flex-wrap:wrap;margin:9px 0}.keys button{font-size:12px;border-color:#b7cfc7;color:#184e43;background:#f5faf6}.selection{margin-top:8px;background:#edf4f0;border-left:3px solid #25876e;padding:9px 12px;min-height:40px;overflow-wrap:anywhere}.section{margin:28px 0}.filters,.pager{font-size:13px}.tablewrap{overflow:auto;margin-top:9px}table{border-collapse:collapse;min-width:600px;width:100%;font-size:13px}th,td{padding:7px 10px;text-align:left;border-bottom:1px solid #dfE6e3}th{color:var(--muted);font-size:12px;font-weight:550;background:#f8faf7}.ledger td:last-child{min-width:230px}.ledger tbody tr{cursor:pointer}.ledger tbody tr:hover,.ledger tr.sel{background:#e8f2eb}.rowlink{border:0;padding:0;color:#08604e;background:transparent;text-align:left}.pager{justify-content:flex-end;margin:10px 0}.matrix td:not(:first-child),.matrix th:not(:first-child){text-align:right}.matrix .here{background:#ecf5ef}.sources{gap:8px 15px;font-size:13px}.details{margin:15px 0 35px}.details summary{cursor:pointer;font-weight:650}.details p{font-size:13px}.tip{display:none;position:fixed;z-index:4;max-width:min(390px,90vw);background:#132f33;color:white;border-radius:7px;padding:9px 12px;pointer-events:none;font-size:12px;white-space:pre-line;box-shadow:0 3px 15px #16363530}.callout{font-weight:600}.hint{margin:5px 0}.summaryline{color:#385e57}.pan[disabled]{opacity:.4}
+@media(max-width:850px){.chartcard{grid-template-columns:150px minmax(0,1fr)}.sysinfo{padding:11px 10px}.sysinfo h3{font-size:19px}.controls{gap:5px}.controls input{width:78px}}
+@media(max-width:640px){main,header>div{padding-left:12px;padding-right:12px}header small{font-size:10px}.cases{gap:5px}.cases button{font-size:12px;padding:6px 8px}.chartcard{display:block}.sysinfo{border:0;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:4px 12px;flex-wrap:wrap}.sysinfo .sub{margin:0;padding:0;border:0}.sysinfo p{margin:0}.metric{font-size:20px}.graph{padding:2px 3px}.infozone{padding:11px}.section{margin:18px 0}.headrow{align-items:flex-start}.legend{gap:4px 9px}.controls{width:100%}h2{font-size:19px}}
+.kd-note{padding:3px 6px 8px;color:var(--muted);font-size:12px}.kd-note button{margin-left:auto}
+
+.design-doc{margin:42px 0 70px;padding-top:28px;border-top:2px solid var(--ink);scroll-margin-top:16px}
+.design-heading h2{font-size:clamp(25px,3vw,38px);line-height:1.24}
+.design-heading>p{max-width:82ch;color:var(--muted);margin:10px 0 22px}
+.design-jump{font-size:13px;white-space:nowrap;margin-left:.6em}
+.design-layout{display:grid;grid-template-columns:minmax(155px,190px) minmax(0,1fr);gap:clamp(16px,3vw,42px);align-items:start}
+.design-index{position:sticky;top:14px;display:grid;gap:1px;border-left:2px solid var(--line);padding-left:12px}
+.design-index strong{margin:0 0 6px}.design-index a{padding:3px 0;text-decoration:none}.design-index a:hover,.code-refs a:hover{text-decoration:underline}
+.design-body{min-width:0;max-width:1050px}
+.design-body>section{border-top:1px solid var(--line);padding:20px 0;scroll-margin-top:14px}
+.design-body>section:first-child{border-top:0;padding-top:0}
+.design-body h3{font-size:clamp(19px,2.2vw,26px)}
+.design-body h4{font-size:16px;margin:14px 0 4px}.design-body p{line-height:1.75}
+.design-body code{font: .91em/1.55 var(--mono);overflow-wrap:anywhere}
+.design-fields{margin:10px 0;display:grid;grid-template-columns:minmax(150px,23%) minmax(0,1fr)}
+.design-fields dt,.design-fields dd{padding:7px 10px;border-bottom:1px solid var(--line);margin:0}
+.design-fields dt{font-weight:650;color:#214c45;background:#eaf0eb}
+.round-flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:12px 0;padding:0;list-style:none;gap:8px}
+.round-flow li{background:#fff;border:1px solid var(--line);border-top:3px solid var(--accent);padding:10px 12px}
+.round-flow li:nth-child(1){border-top-color:#3277ae}.round-flow li:nth-child(3){border-top-color:#8059a0}.round-flow li:nth-child(4){border-top-color:#397b89}
+.round-flow b,.round-flow span{display:block}.round-flow span{margin-top:4px;color:var(--muted);font-size:13px}
+.design-table{overflow-x:auto;margin:10px 0}
+.design-table table{background:white;min-width:540px}.design-table caption{text-align:left;font-weight:600;color:var(--muted);padding:0 0 6px}
+.design-table th,.design-table td{vertical-align:top;line-height:1.65}.design-table th[scope=row]{font-weight:650;color:var(--ink);background:#f6f9f6}
+.history-table th:first-child{width:17%}.history-table th:last-child{width:19%}
+.design-body .code-refs{display:flex;align-items:baseline;gap:2px 14px;flex-wrap:wrap;font-size:12px;margin:8px 0 0}
+.trace-example{background:#e6f0eb;border-left:3px solid var(--accent);padding:12px 15px;margin:14px 0}
+.trace-example h4{margin-top:0}.trace-times{margin:10px 0;display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.trace-times dt{font-size:12px;color:var(--muted)}.trace-times dd{margin:0;font:600 18px/1.6 var(--mono)}
+.evidence-table td{font-variant-numeric:tabular-nums}
+.design-command{margin:16px 0 0}.design-command summary{cursor:pointer;font-weight:600}.design-command pre{overflow:auto;background:#153334;color:#e8f3ed;padding:12px 16px;border-radius:6px;font-size:13px}
+@media(max-width:850px){.design-layout{grid-template-columns:1fr}.design-index{position:static;display:flex;align-items:baseline;flex-wrap:wrap;gap:3px 15px}.design-index strong{width:100%;margin-bottom:2px}.round-flow,.trace-times{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.design-doc{margin:24px 0 36px}.design-jump{margin-left:0;display:block;width:fit-content}.design-fields{display:block}.design-fields dt,.design-fields dd{padding:6px 8px}.design-table table{min-width:0}.history-table,.history-table tbody,.history-table tr,.history-table td,.history-table th[scope=row]{display:block;width:auto!important}.history-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.history-table tr{padding:8px 0;border-top:1px solid var(--line)}.history-table td,.history-table th[scope=row]{border:0}.round-flow li{padding:8px}.design-body h3{font-size:21px}}
+
+</style></head><body>
+<header><div><strong>DynaMOPD / 实验回放</strong><small id="recorded"></small></div></header>
+<main><div class="intro"><h1>八张 GPU 的训练时间线</h1><p>五组实测，三种调度策略。每个系统一张图，共用秒轴；沿同一行可查看从生成到训练的活动。 <a class="design-jump" href="#design">系统设计与迭代记录 ↓</a></p></div>
+<div class="toolbar"><nav class="cases" id="cases" aria-label="实验场景"></nav><label class="steps">查看训练步 <select id="step"><option value="1">第 1 步 · 首步</option><option value="2" selected>第 2 步 · 稳态</option><option value="3">第 3 步 · 稳态</option><option value="4">第 4 步 · 末步</option></select></label></div>
+<p class="scene-info" id="scene"></p><p class="summaryline" id="headline" hidden></p>
+<div class="headrow"><h2>GPU 活动</h2><div class="controls"><label>共同缩放 <select id="zoom"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option><option value="32">32×</option><option value="64">64×</option><option value="128">128×</option></select></label><label>平移 <input id="pan" class="pan" aria-label="平移时间窗" type="range" min="0" max="1000" value="0"></label><button id="reset">全步</button><span id="window" class="stamp"></span></div></div>
+<div class="legend" id="legend"></div><div id="charts"></div>
+<p class="chartnote">条带为框架调用或卡组交接的墙钟区间，包含排队与同步。浅灰为缺少活动记录，斜纹为该系统已经结束本步。悬停查看区间，点击可固定详情。</p>
+<section class="block infozone"><div class="headrow"><h2>DynaMOPD 的调度动作</h2><span class="sub" id="counts"></span></div><p id="concurrency" class="summaryline"></p><p id="story"></p><div class="keys" id="keys"></div><div class="selection" id="selection" aria-live="polite">点击时间条或下方动作查看证据。</div>
+<div class="section"><div class="headrow"><h3>动作明细</h3><div class="filters"><label>范围 <select id="filter"><option value="handoff">换岗、迁移与屏障</option><option value="all">全部动作</option><option value="score">教师评分</option><option value="train">训练与归约</option></select></label><label>卡组 <select id="group"><option value="-1">全部卡组</option><option value="0">G0 · 0/1</option><option value="1">G1 · 2/3</option><option value="2">G2 · 4/5</option><option value="3">G3 · 6/7</option></select></label></div></div>
+<div class="tablewrap"><table class="ledger"><thead><tr><th>开始 → 结束 / s</th><th>耗时 / s</th><th>GPU</th><th>动作</th><th>回执</th></tr></thead><tbody id="ledger"></tbody></table></div><div class="pager"><span id="page"></span><button id="prev">上一页</button><button id="next">下一页</button></div></div></section>
+<section class="section" id="tailMeasure" hidden>
+<div class="headrow"><h2>16K 长尾与 TP1 → TP4 交接</h2><button id="tailFocus">定位本步单请求尾段</button></div>
+<p id="tailRound"></p>
+<h3>相同前缀的独立引擎测量</h3>
+<div class="block tablewrap"><table class="matrix"><thead><tr><th>轨迹</th><th>命中 KV / token</th><th>配对次数</th><th>交接就绪 P50 / ms</th><th>交接至首 token P50 / ms</th><th>交接至首 token P95 / ms</th><th>相对 TP1 额外等待 P50 / ms</th><th>额外等待 P95 / ms</th></tr></thead><tbody id="tailRows"></tbody></table></div>
+<p id="tailHot"></p><p id="tailCold"></p><p class="sub" id="tailSetup"></p>
+</section>
+<section class="section" id="measurement" hidden><div class="headrow"><h2>14B 教师换岗实测</h2><span class="sub">步时与吞吐取第 2、3 步，整作业计入初始化和末次保存</span></div>
+<div class="block tablewrap"><table class="matrix"><thead><tr><th>系统</th><th>平均秒/步</th><th>有效训练 token/s</th><th>四步整作业 / s</th><th>留出前缀 KL / nat ↓</th></tr></thead><tbody id="measuredRows"></tbody></table></div>
+<p id="versions"></p><p id="leases"></p><p id="pressure"></p><p class="sub" id="quality"></p></section>
+<section class="section"><div class="headrow"><h2>五个场景的稳态步时与生成长尾</h2><span class="sub">第 2、3 步的算术平均 · 秒/步</span></div><div class="block tablewrap"><table class="matrix"><thead><tr><th>场景</th><th>DynaMOPD</th><th>KDFlow</th><th>verl（4+4）</th><th>KDFlow 步时 ÷ DynaMOPD 步时</th><th>KDFlow 单请求尾段 / s</th></tr></thead><tbody id="matrix"></tbody></table></div></section>
+<details class="details" open><summary>计时口径与数据来源</summary><p>各系统独立使用 8×H20，全局 batch 512，sampled K1，同一场景的输入一致，实际采样长度会有差异。图中给出选中步的有效回答 token。首步和末步也可回放，稳态比较只使用第 2、3 步。图页顶部标注所选场景的实测日期。</p>
+<p>DynaMOPD 从 round_start 计时，按 executor_ready 的组到物理卡映射绘制。生成按实际副本请求数、评分按请求 seed 的 TP1 路由定位到卡；区间边界为卡组回执。合并期间源和目标均预留。换岗按回执的 unload_s 拆分，余段包含加载与等待。“三项并行”行用三色叠带标出至少各有一组生成、评分、训练的墙钟交集。</p>
+<p>KDFlow 与 verl 以各步最外层 rollout 调用起点对齐，步长来自框架计时。请求条合并同卡、同类且时间相交的调用。KDFlow 每行合用两个标识。生成阶段按客户端进入 generate_one 的顺序轮询重建副本 A–H，使用请求实测起止时间。蓝色表示推理，沙色表示等待。其他阶段按物理 GPU 0–7 的实测记录绘制。网络可能改变请求到达 router 的顺序；A–H 与物理卡号的对应关系未知。贯穿八行的色带表示教师卡池的整体换岗调用。悬停显示该时刻全池实测在途数；若剩 N 个请求，最多 min(N,8) 张 TP1 卡能同时处理它们。verl 的单卡请求按 worker 的可见 GPU 和运行模式区分学生与冻结教师。训练、重算和发布按 worker 的外层调用绘制，嵌套状态搬移可与其重叠。图中没有 kernel 利用率采样。</p><div class="sources" id="sources"></div></details>
+<section id="design" class="design-doc" aria-labelledby="design-title">
+<div class="design-heading"><h2 id="design-title">DynaMOPD 系统设计与实现</h2><p>一轮内，已排空的卡组可以给仍在生成的回答评分，也可以对监督齐备的样本做前反向。所有卡组使用同一版 student，轮末只提交一次更新。下文对应 2026-11-23 的代码和实验归档。</p></div>
+<div class="design-layout"><nav class="design-index" aria-label="系统设计目录"><strong>设计目录</strong>
+<a href="#design-round">一轮训练的调用链</a><a href="#design-data">数据与算法层</a><a href="#design-scheduler">调度层</a><a href="#design-workers">执行层与资源交接</a><a href="#design-update">训练与权重发布</a><a href="#design-sim">模拟与成本校准</a><a href="#design-cluster">集群与扩展接口</a><a href="#design-history">设计迭代记录</a>
+</nav><div class="design-body">
+<section id="design-round"><h3>一轮训练的调用链</h3>
+<p><code>launch.sh → run.main → trainer.fit → Controller.run_round</code>。Driver 读入配置和数据，创建算法、策略和执行器。Controller 是轨迹与卡组状态的单一写入者。策略提出动作，controller 领取租约，worker 在安全点执行。Controller 收到完成回执后更新状态，开始下一次决策。</p>
+<ol class="round-flow" aria-label="一条轨迹的数据流">
+<li><b>全卡生成</b><span>SGLang 返回确认的 token、行为 logprob 和停止原因。</span></li>
+<li><b>按路由评分</b><span>Controller 收集同一教师的前缀，组批发送，按轨迹及区间接回监督。</span></li>
+<li><b>就绪微批反向</b><span>终止并收齐监督的样本交给空闲训练组，其他组继续服务本轮。</span></li>
+<li><b>全批更新与屏障</b><span>归约梯度，执行一次 AdamW，发布新权重。所有 rollout 组确认后进入下一轮。</span></li></ol>
+<p class="code-refs"><a href="../../launch.sh">启动脚本</a><a href="../../run.py">CLI</a><a href="../../trainer/driver.py">fit</a><a href="../../scheduler/controller.py">run_round / assign / settle</a></p></section>
+
+<section id="design-data"><h3>数据与算法层</h3>
+<h4>一条轨迹保存三种进度</h4>
+<p>数据入口将 JSONL 或 Parquet 中的 prompt 按 student 模板分词，检查教师与学生的 token ID 含义。每题在入队时取得 <code>v{version}/r{index}</code>、请求 seed、生成上限和一条教师路由。多个教师各自服务一部分轨迹，同一轨迹目前使用一位冻结教师。</p>
+<dl class="design-fields"><dt><code>Row.tokens</code>、<code>behavior</code></dt><dd>学生已经确认的回答和逐 token 行为 logprob。<code>owner</code> 指定可以继续采样的卡组，迁移后 ID 与已发布前缀保持连续。</dd>
+<dt><code>Row.labels</code></dt><dd>教师已交付的连续监督，区间按回答位置记为 <code>[start, end)</code>。同一轨迹同时至多有一个在途评分区间。</dd>
+<dt><code>Row.kv</code></dt><dd>记录哪个教师卡组可能续算到哪个位置。命中量以引擎回执的 <code>cached_tokens</code> 为准。驱逐 KV 后保留已交付监督，下段可从真实前缀重算。</dd></dl>
+<p>例如已有 256 个回答 token 完成评分，下一段从回答位置 256 开始。Worker 将 prompt 和回答送到该段末尾，设置 <code>logprob_start_len = len(prompt) + 256 − 1</code>。SGLang 返回的首项是前驱 ID 和空 logprob。Worker 核对前驱及目标 ID 后取后续各项，所以 chunk 的第一个新 token 也有对齐的教师分数。</p>
+<p class="code-refs"><a href="../../trainer/data.py">建样本与路由</a><a href="../../scheduler/protocol.py">Row.prefix / deliver / ready</a><a href="../../backends/sglang_engine.py">Inference.score</a><a href="../../backends/checks.py">整段、续评与清缓存重算校验</a></p>
+<h4>比较系统时采用同一份 sampled K1 配方</h4><p>当前 DAPO 对照保留 EOS 和达到长度上限的真实回答 token，终止且监督齐备才进入训练。FSDP2 在轮初权重上先无梯度重算 old logprob，再做可求导的 actor 前向。对采样位置取 <code>advantage = (teacher_logp − current_logp).detach()</code>，使用 verl 的 vanilla PPO 裁剪及 dual clip。直接调用原生 verl 的同输入回归覆盖 EOS、截断、padding 和裁剪分支，逐元素梯度及一次 AdamW 后参数的最大绝对差均为零。独立 on-policy 运行仍可能采到不同的回答。</p>
+<p>扩展算法可实现 <code>DistillationAlgorithm.route</code> 和 <code>token_loss(TokenBatch)</code>，声明所需监督。仓库另提供 sampled reverse KL、重要性加权的 sampled forward KL、教师 top-k 交叉熵。Driver 在申请 GPU 前检查执行器能否提供对应监督。</p>
+<p class="code-refs"><a href="../../algorithms/base.py">算法契约与注册名</a><a href="../../algorithms/sampled.py">采样估计器</a><a href="../../algorithms/verl_k1.py">K1 与 PPO 公式</a><a href="../../algorithms/topk.py">top-k 目标</a></p></section>
+
+<section id="design-scheduler"><h3>调度层</h3><p><code>PlanningState</code> 提供已发布前缀、待评分量、就绪样本、组的角色与驻留时间、在途动作、可用显存及历史成本。<code>plan(state)</code> 可陆续给出多个兼容动作。每次派发时先占用相应卡组，双组动作同时锁住双方。换岗期间，下一批工作留在 controller 的队列中，等 <code>switch</code> 回执后才能开工。</p>
+<div class="design-table"><table><caption>同一套 worker 支持的策略选择</caption><thead><tr><th>配置</th><th>决策内容</th></tr></thead><tbody>
+<tr><th scope="row"><code>natural</code></th><td>生成组自然排空后可转教师或训练，已释放的组照常参与轮内重叠。阶段屏障消融另由 <code>phase_barriers</code> 控制。</td></tr>
+<tr><th scope="row"><code>merge</code></th><td>比较当前教师继续组批、切另一教师、训练就绪微批、等待或迁走一组请求。评分考虑 KV 命中、队列年龄、可解锁训练的末段、下一前缀到达时间与换岗成本。迁移收益受可释放的尾段时间和下游积压共同限制，再扣除前缀恢复及跨节点代价。</td></tr>
+<tr><th scope="row"><code>elastic_tp</code></th><td>在 merge 的选项上加入同节点借卡。用同路由历史中长于当前进度的回答估计剩余长度，缺少历史时使用先验。比较窄、宽 TP 的剩余解码时间，扣除进入、归还和推迟评分或训练的成本。当前执行器支持最后一条存活请求；预计净收益为正且双组容量足够时才扩容。每次完成回执都可修正时延估计。</td></tr>
+<tr><th scope="row"><code>cost_search</code></th><td>在预设空间枚举有方向的迁移对、评分组集合、批量、服务顺序及等待。配置 TP 成本后也比较继续窄解码、借卡和缩回。按预测剩余轮时排序，计入评分到训练的依赖、归约与发布。<code>schedule_search</code> 记录候选和所选布局；本页 16K 真机开关实验使用 <code>merge</code> 与 <code>elastic_tp</code>。</td></tr></tbody></table></div>
+<p>例如 A 教师已有可评分批次、B 的积压在增加时，A 可以继续工作。另两组可以同时预订迁移安全点；等目标确认接管后，controller 才把源组派给 B 或 trainer。若借走该组会让评分或微批等待过久，策略可以让请求留在原组。实际剩余回答长度对线上策略不可见。</p>
+<p class="code-refs"><a href="../../scheduler/base.py">观察与策略接口</a><a href="../../scheduler/policy.py">组批、等待与合并</a><a href="../../scheduler/tail_tp.py">借卡收益计算</a><a href="../../scheduler/search.py">Forecast / CostSearchPolicy</a><a href="../../backends/elastic_profile.py">成本更新</a></p></section>
+
+<section id="design-workers"><h3>执行层与资源交接</h3>
+<h4>自然转岗和请求合并</h4>
+<p>8×H20 配置把 GPU 划为四个双卡组。轮初每张卡上各有一个 TP1 student 副本，同一组的两张卡也可以组成 FSDP2 分片组。自然排空的组可以立即申请下一份工作。主动合并则经过 <code>hold → export → install → release</code>，源和目标都要到达解码块边界。源交出已确认前缀、seed 和绝对位置，目标检查各副本的可用 KV 容量、为下次 decode 留出空间，再以零生成 prefill 恢复前缀。只有目标接受后源才释放所有权。容量拒绝会保留原归属，并进入调度记录。</p>
+<p class="code-refs"><a href="../../backends/executor.py">双组交接协议</a><a href="../../backends/sglang_engine.py">export / install / release</a><a href="../../backends/inference_replicas.py">副本路由及 KV 容量</a></p>
+<h4>切换冻结教师</h4>
+<p>相同推理配置的模型可复用 SGLang 进程，每次接卡仍要加载该角色的权重。Qwen2 的兼容判断考虑上下文和位置编码，支持的配置可显式恢复 RoPE。架构不兼容时走独立教师 rank 的租约路径。14B 配置在 CPU 上预先导入依赖，到首次 CUDA 操作前等待。接卡后才加载 14B 参数并建立 KV 池，释放时回收 GPU 子进程，逐卡用 NVML 核对相关 PID 已退出。持有教师租约的仍是本轮共享卡组。</p>
+<p>接卡时检查保留 trainer 状态后的可用显存及教师实际 KV 容量。14B 配置还会把带版本的 FP32 参数和 AdamW 状态提前镜像到主机，下一次迁出可复用同版本副本。真实训练中五次进入 14B 的总交接为 6.42–7.62 秒，退出为 0.25–0.37 秒。释放后立即重申请的独立压力实验用了 24.36 秒，其中 18.91 秒花在等待 CPU 准备。</p>
+<p class="code-refs"><a href="../../workers/group.py">GroupWorker.switch</a><a href="../../backends/qwen2_rope.py">RoPE 装载</a><a href="../../backends/teacher_rank.py">CPU 待命与 GPU rank</a><a href="../../backends/teacher_pool.py">教师接卡与回收</a></p>
+<h4>借卡执行宽 TP</h4>
+<p>当前真机配置预建 GPU 0–3 和 4–7 两个 SGLang TP4 引擎，保留通信组与已捕获的解码图。休眠时权重备份在 CPU，释放受内存管理器控制的 GPU 缓冲区。两组在开训前并行准备约 74.5 秒，每卡待命仍占约 2.0–2.65 GiB。调度器在单条尾请求的块边界为两个组取得独占租约，worker 复查显存和 student 版本。目标重算前缀，核对最后一个 token 的 ID 和行为 logprob，再按原 seed 与绝对位置继续采样。借出训练组可以保留尚未提交的梯度；EOS 或下游服务压力达到缩回条件后归还。</p>
+<p>宽 TP 方案采用 PAT 的预计收益判定、Flying Serving 的预建通信组，并参考 ReMP 对请求状态与执行拓扑的拆分。在线训练对推迟教师评分和微批训练的时间另行计价。<a href="https://arxiv.org/abs/2605.23945">PAT</a> · <a href="https://arxiv.org/abs/2602.22593">Flying Serving</a> · <a href="https://arxiv.org/abs/2606.18741">ReMP</a></p>
+<aside class="trace-example"><h4>从一次真实交接看计时边界</h4>
+<p>第 1 步的 <code>v0/r374</code> 已生成 6,400 个 token。GPU 4 上的请求借用 GPU 6、7 所在训练组，与 GPU 5 一起组成 TP4。调度时估计剩余 640 个 token，预计净省 3.40 秒。事后，TP4 实际生成了 8,153 个 token。</p>
+<dl class="trace-times"><div><dt>唤醒分片</dt><dd>0.164 s</dd></div><div><dt>重算 6,647 个前缀 token</dt><dd>0.328 s</dd></div><div><dt>交接至可解码</dt><dd>0.493 s</dd></div><div><dt>归还卡组</dt><dd>0.139 s</dd></div></dl>
+<p>从接卡到第一个 256-token 块返回为 2.717 秒，含交接与解码。训练 trace 按块记录返回时间。此前冷建 TP4 的独立实验从关闭 TP1 一直计到新引擎首 token，共 56.86 秒。另一条独立热交接路径固定源端 radix 页、经 CUDA IPC 在目标安装 KV 分片后解锁，测量前两端都已驻留权重。当前训练路径实际搬运的 KV 为 0 字节。</p>
+<a id="design-replay-tp" href="#cap16k/1">在八卡时间线上定位这次交接</a></aside>
+<p class="code-refs"><a href="../../backends/elastic_rollout.py">WideRollout.prepare / execute / publish</a><a href="../../configs/h20-rollout-tp1-tp4.json">本地配对与成本先验</a></p></section>
+
+<section id="design-update"><h3>训练与权重发布</h3>
+<h4>先反向，后统一更新</h4><p>就绪微批只归一个训练组。FSDP2 按长度均衡组内各 rank，DAPO 路径用变长 FlashAttention 2 打包独立因果序列，只对需要预测回答的位置计算 logits。每个 rank 累加本地有效 token 的损失和梯度，空 rank 也参加必要的集合通信。轮末，各组的相同分片 rank 经 NCCL 把 FP32 梯度汇到优化器组，按整轮有效回答 token 总数归一，裁剪一次、执行一次 AdamW，再同步各副本的 FP32 主参数。</p>
+<h4>发布屏障与恢复点</h4><p>更新后从主参数捕获 BF16 分片，逐桶聚合并分发。SGLang 在本卡通过 CUDA IPC 消费参数，最后一个桶刷新缓存并声明新版本。有下一轮时，配对的宽引擎也消费这次发布，每个接收进程独立导出 IPC 引用。全部接收方回执后回收源缓冲。显存预算包含窄引擎唤醒、发布临时缓冲、宽引擎权重和余量，据此决定 Adam 能否留在 GPU。控制器收到所有 rollout 组的新版本确认后才开启下一轮。</p>
+<p>持久化频率由 <code>checkpoint_interval</code> 控制。普通轮走内存张量发布，指定轮可保存 HF 模型和含优化器的 DCP；含训练状态的已提交版本支持恢复。此次 16K 对照末步只导出 HF 供评估。Trace 分别记录 <code>commit</code>、<code>hf_checkpoint</code>、<code>durable</code> 和 <code>rollout_barrier</code>，可据此拆出持久化耗时。</p>
+<p class="code-refs"><a href="../../backends/fsdp2.py">训练分片、提交与镜像</a><a href="../../backends/replica_sync.py">跨组归约与主参数同步</a><a href="../../backends/weight_sync.py">分桶与 IPC 引用</a></p></section>
+
+<section id="design-sim"><h3>模拟与成本校准</h3><p>同一份策略通过 <code>Executor.submit(Action)</code> 下发动作，以 <code>wait()</code> 收取开始、结束、剩余显存和结果。真实执行器等待引擎回执。SimRL 适配器按预测耗时将完成事件加入最小堆，将虚拟时钟推进到下一次完成。解码使用 SimRL 的 roofline 成本和逐副本 KV 块分配器，评分、训练、角色释放和权重发布各有成本项。回放从 <code>samples-vN.jsonl</code> 固定每题实际长度，供执行器推进 EOS；策略仍只看到已经发布的 token。</p>
+<p>校准按服务方向、引擎生命周期、trainer 驻留及优化器位置区分换岗，按最慢训练 rank 的工作量估计打包微批。一次跨组发布在最慢组准备好后结算共享通信，较早到达的组单列等待。TP 有两种模型：一份计算 KV head 重分片、搬运字节和通信组代价；另一份使用真机宽引擎的唤醒、前缀重算、单请求解码和归还成本，同时计入待命及唤醒显存。</p>
+<p>用新 14B 路径前两轮拟合、第三轮留出，12 次服务换岗的平均绝对误差从按角色对估计的 0.91 秒降到 0.54 秒。另一组同 token 回放中，成本搜索相对自然排空在旧 14B 流程得到 1.31×，在 7B 对照为 0.95×。这些是虚拟轮时，预测误差仍会改变合并或等待的选择。</p>
+<p class="code-refs"><a href="../../backends/simulation.py">虚拟时钟与执行器</a><a href="../../backends/sim_tp.py">KV 重分片模型</a><a href="../../tools/worker_costs.py">拟合与留出验证</a><a href="../../docs/simulator-cost-search.md">回放配置与误差明细</a></p></section>
+
+<section id="design-cluster"><h3>集群与扩展接口</h3><p>核心训练循环和 controller 在 DynaMOPD 包内。按功能收录的 verl 代码包括 FSDP2 包装、模型和优化器装卸、FlashAttention logprob 工具。K1 在算法层实现并对照原生函数校验。基线启动器从各自 checkout 运行实际 KDFlow 和 verl trainer。当前真机训练使用 SGLang + FSDP2，仓库另有 HF 参考执行器。</p>
+<dl class="design-fields"><dt>换算法或策略</dt><dd><code>algorithm</code>、<code>policy</code> 接受内置名或 <code>package.module:Class</code>。算法提供逐 token 损失，策略从只读观察生成动作。新增监督格式还需要对应的教师生产、区间交付和训练消费逻辑。</dd>
+<dt>换执行器</dt><dd>实现 <code>now / submit / wait / close</code>，声明放置、监督类型和恢复能力。模拟、参考后端与真实 worker 共用动作与回执契约。</dd>
+<dt>扩展到多节点</dt><dd><code>GroupPlacement</code> 映射全局组号、节点和本地设备。Ray transport 用 placement group 预留整组 GPU，在 actor 所在节点启动 SGLang 与 FSDP2 rank，校验共享输出和版本目录。跨组通信通过 NCCL，本卡权重交付使用 IPC。本页的真机结果来自单节点八卡。弹性 TP 的原生入口当前限定为本地 transport 及同节点配对。</dd></dl>
+<p class="code-refs"><a href="../../components.py">组件解析</a><a href="../../backends/base.py">Executor / Receipt</a><a href="../../backends/registry.py">后端选择</a><a href="../../cluster/ray.py">Ray 放置</a><a href="../../configs/ray-cluster.json">集群配置</a><a href="../../licenses/verl.md">verl 来源及许可</a><a href="../../docs/extensions.md">扩展示例</a></p></section>
+
+<section id="design-history"><h3>设计迭代记录</h3>
+<p>以下按实现里程碑整理。各阶段性能数字来自对应的历史实验。</p>
+<div class="design-table"><table class="history-table"><caption>从同步闭环到按负载借卡</caption><thead><tr><th>阶段</th><th>遇到的问题与实现变化</th></tr></thead><tbody>
+<tr><th scope="row">前缀流水与同步闭环</th><td>用 SimRL 比较自然排空与请求合并，再用 SGLang 实际分块生成、跨轨迹评分、FSDP2 提前反向。早期真机通过磁盘发布版本，连续两轮确认新权重并重新生成。</td></tr>
+<tr><th scope="row">分开权重发布与持久化</th><td>早期三轮 DAPO 每轮都写 DCP，每次约 50–52 秒。支持间隔持久化和固定优化器所有者，普通轮改用 NCCL 分桶广播与同卡 IPC，使下一轮能直接拿到 BF16 权重。</td></tr>
+<tr><th scope="row">驻留、打包与预热</th><td>测量唤醒显存，容量允许时保留 FP32 主参数及 Adam，预先建立发布通信组。双教师 TP2 短测首轮从提交开始到全组就绪由 21.83 秒降至 0.89 秒。打包的 FA2 前反向另与稠密 SDPA 梯度对照。</td></tr>
+<tr><th scope="row">教师放置与 K1 对齐</th><td>曾比较每组预热教师副本、共享引擎、单引擎重启。随后把冻结教师放进动态卡组，并将最初只训练自然 EOS 的配置扩展为按完整 response mask 训练。对齐 old-logprob 单独前向、PPO 裁剪以及 KDFlow 的 K1 适配器。</td></tr>
+<tr><th scope="row">大 batch 与多组训练</th><td>DAPO batch 512 的早期实现中，最后一条回答结束后平均还需 139.58 秒训练和发布。改用八个 TP1 rollout、双卡 FSDP2 分片、多组就绪微批、同 rank 梯度归约，并优化冻结教师分桶装载。后续同布局的阶段屏障消融中，第 2–5 步平均从 103.50 降至 83.20 秒。</td></tr>
+<tr><th scope="row">五场景与调度成本</th><td>在 DAPO 对照、14B 教师、16K 上限、GSM8K、Math 学生上保留真实回答长度。统一核对推理 TP、训练分片、token 预算与题集。Math 学生实验修正相同词表及输出头下未命名 ID 的处理。用历史回执校准换岗和训练成本，加入预设空间搜索与虚拟等待。</td></tr>
+<tr><th scope="row">14B 教师按需接卡</th><td>跨架构重启曾让单次交接耗时 49–69 秒。将 CPU 准备移出接卡路径，标定实际 KV 容量，迭代对比临时迁出、仅镜像 Adam、同时镜像参数与 Adam。最终四步作业中，五次切入 14B 的交接中位数为 6.66 秒。</td></tr>
+<tr><th scope="row">从热 KV 实验到宽 TP</th><td>独立测试 KV 分片转移、双引擎热交接和冷重启，用 SimRL 比较维持 TP 与扩容。16K 复测采用 2,048 行分块计算输入 logprob，解决长前缀评分的显存峰值。正式训练选择预建宽引擎、取得租约后重算前缀。</td></tr>
+<tr><th scope="row">宽引擎连续发布</th><td>首次训练在第二次发布时显存不足，增加了宽引擎唤醒预算。复测发现两个消费进程共用一个 IPC 引用会导致缓冲回收异常。改为同一张量分别导出引用、等待双方回执并回收。最终四步更新到 v4，三次中间发布后优化器均驻留 GPU。</td></tr>
+</tbody></table></div></section>
+
+</div></div></section>
+</main>
+<div class="tip" id="tip" role="tooltip"></div>
+<script type="application/json" id="report">__REPORT_DATA__</script>
+<script>
+"use strict";
+const data=JSON.parse(document.querySelector("#report").textContent), $=id=>document.getElementById(id);
+const systems=["dynamopd","kdflow","verl"], names={dynamopd:"DynaMOPD",kdflow:"KDFlow",verl:"verl"};
+const colors={decode:"#3277ae",replica_decode:"#397caf",replica_wait:"#c9c7b9",score:"#168568",train:"#8059a0",logprob:"#aa83bd",move:"#d97739",reject:"#a44c42",switch:"#d4a13e",unload:"#a28b64",reduce_grads:"#af4d71",commit:"#683653",publish:"#397b89"};
+const labels={decode:"生成请求",replica_decode:"副本推理（重建）",replica_wait:"副本等待（重建）",score:"教师评分",train:"训练",logprob:"重算 logprob",move:"迁移",reject:"迁移被拒",switch:"加载",unload:"卸载",reduce_grads:"梯度归约",commit:"提交",publish:"权重发布"};
+const strategies={dynamopd:"四个双卡组动态转岗；组内运行 TP1 副本。",kdflow:"GPU 0–7 各运行 1 个 SGLang TP1 副本，router 轮询分发。整批生成完成后才进入教师评分。",verl:"0–3 卡承担生成与训练；4–7 卡组成独立教师池。"};
+const ns="http://www.w3.org/2000/svg", pageSize=12;
+let key="control",step=2,zoom=1,left=0,pin=null,focusSeq=null,page=0,allActions=[],graphs=[];
+function el(tag,text,cls){const e=document.createElement(tag);if(text!=null)e.textContent=text;if(cls)e.className=cls;return e}
+function svg(tag,attrs,text){const e=document.createElementNS(ns,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(text!=null)e.textContent=text;return e}
+function button(title,fn){const e=el("button",title);e.type="button";e.onclick=fn;return e}
+const round=sys=>data[key].systems[sys][step-1],longest=()=>Math.max(...systems.map(n=>round(n).duration)),fmt=(v,n=2)=>Number(v).toFixed(n),sec=v=>fmt(v)+" s", gpu=ids=>ids.length===1&&ids[0]===8?"池汇总":ids.join(" / ");
+const estimated=k=>k==="replica_wait"||k==="replica_decode";
+function trackName(k,id){return estimated(k)?"副本 "+String.fromCharCode(65+id)+"（轮询重建）":id===8?"池汇总":"GPU "+id}
+function tailFocus(r){
+ const span=Math.max(1,1.3*(r.end-r.tail_start));
+ zoom=[128,64,32,16,8,4,2,1].find(z=>longest()/z>=span)||1;
+ setLeft((r.tail_start+r.end)/2-longest()/zoom/2);
+ pin=r.end-r.single_request_tail_s/2;focusSeq=null;draw();ledger()
+}
+function setup(){
+ for(const k of Object.keys(data)){const b=button(data[k].name,()=>choose(k,step));b.dataset.case=k;$("cases").append(b)}
+ for(const [k,name] of Object.entries(labels)){const e=el("span"),i=el("i",null,"dot");i.style.background=colors[k];e.append(i,document.createTextNode(name));$("legend").append(e)}
+ $("step").onchange=e=>choose(key,Number(e.target.value));
+ $("zoom").onchange=e=>{const t=pin??(left+longest()/zoom/2);zoom=Number(e.target.value);setLeft(t-longest()/zoom/2);draw()};
+ $("pan").oninput=e=>{left=Number(e.target.value)/1000*(longest()-longest()/zoom);draw()};
+ $("reset").onclick=()=>{zoom=1;setLeft(0);pin=null;focusSeq=null;draw();ledger();$("selection").textContent="点击时间条或下方动作查看证据。"};
+ $("filter").onchange=$("group").onchange=()=>{page=0;ledger()};$("prev").onclick=()=>{page--;ledger()};$("next").onclick=()=>{page++;ledger()};
+ const [scene,st]=location.hash.slice(1).split("/");
+ const latest=data.cap16k?.measurement?"cap16k":data.teacher14b?.measurement?"teacher14b":null;
+ choose(Object.hasOwn(data,scene)?scene:(latest??"control"),[1,2,3,4].includes(+st)?+st:!Object.hasOwn(data,scene)&&latest?(data[latest].measurement.default_step??3):2,false);
+ $("design-replay-tp").onclick=e=>{
+  e.preventDefault();choose("cap16k",1);
+  if(!$("tailFocus").hidden)$("tailFocus").click();
+  else $("charts").scrollIntoView({block:"start"});
+ };
+ window.addEventListener("resize",()=>{hideTip();draw()});
+ window.addEventListener("hashchange",()=>{const [k,n]=location.hash.slice(1).split("/");if(Object.hasOwn(data,k)&&[1,2,3,4].includes(+n)&&(k!==key||+n!==step))choose(k,+n,false)});
+}
+function setLeft(v){left=Math.max(0,Math.min(longest()-longest()/zoom,v))}
+function showTailMeasurement(m){
+ $("tailFocus").textContent="定位本步单请求尾段";
+ const r=m.rounds[step-1], dispatch=m.rounds.reduce((a,v)=>a+v.tp_dispatches,0);
+ $("tailRound").textContent="第 "+step+" 步合并 "+r.merges+" 次，各次解码回执的 TP 宽度为 "+r.decode_widths.join("、")+"。"
+   +(r.rid?r.rid+" 在步内 "+sec(r.start_s)+" 已是唯一活跃请求，GPU "+r.device+" 的首个解码回执命中 "+r.first_cache_hit.toLocaleString()+" 个 KV 位置。随后又生成 "+r.remaining.toLocaleString()+" 个 token，耗时 "+sec(r.tail_s)+"。":"本步未观察到只剩一个活跃请求后的新解码调用。");
+ $("tailFocus").hidden=!r.rid;
+ $("tailFocus").onclick=()=>{tailFocus({end:r.start_s+r.tail_s,tail_start:r.start_s,single_request_tail_s:r.tail_s});$("charts").scrollIntoView({block:"center"})};
+ $("headline").textContent="本次四步训练的 TP 扩容调度 "+dispatch+" 次。DynaMOPD 使用 8 个固定 TP1 副本，当前真实训练器的 merge 策略可迁移请求，弹性 TP 仅在模拟器中开放。首次尝试在第 3 步评分时显存不足。复测采用 SGLang 原生 2,048 行分块计算输入 logprob。KDFlow 与 verl 沿用 11 月 22 日同场景实测。";
+ $("tailRows").replaceChildren();
+ for(const h of m.hot){
+   const row=el("tr"), t=h.times_ms;
+   if(h.cached===m.cached)row.className="here";
+   for(const value of [h.sample,h.cached.toLocaleString(),h.repeats,fmt(t.ready_s.p50),fmt(t.total_s.p50),fmt(t.total_s.p95),fmt(t.extra_first_s.p50),fmt(t.extra_first_s.p95)])row.append(el("td",value));
+   $("tailRows").append(row);
+ }
+ const h=m.hot.find(v=>v.cached===m.cached),t=h.times_ms;
+ $("tailHot").textContent="长尾 "+m.sample+"，"+m.cached.toLocaleString()+" 个已计算的 KV 位置。交接 P50 分段耗时为源端固定前缀 "+fmt(t.offer_s.p50)+" ms、目标搬运并安装 "+fmt(t.install_s.p50)+" ms、源端解锁 "+fmt(t.release_s.p50)+" ms。原地 TP1 到首 token 为 "+fmt(t.tp1_continue_s.p50)+" ms。表中额外等待按同一对请求相减后取分位数。";
+ $("tailCold").textContent="同一前缀临时组建 TP4，从开始关闭 TP1 到 TP4 返回首 token 用时 "+sec(m.cold_total_s)+"（单次完整启动）。其中关闭 TP1 "+sec(m.cold_close_s)+"，TP4 启动就绪 "+sec(m.cold_start_s)+"，重算前缀和首 token "+sec(m.cold_replay_s)+"。稳定后 batch 1 每个后续 token 中位用时为 TP1 "+fmt(m.tp1_ms)+" ms、TP4 "+fmt(m.tp4_ms)+" ms。";
+ $("tailSetup").textContent="微基准独占同节点四卡，用初始学生权重回放本次训练的真实 token，固定 greedy 解码。热路径事先加载两个引擎，TP4 启动 "+sec(m.target_start_s)+"，一次性 KV 池映射 "+sec(m.once_map_s)+"，首次 256 token 预热交接到首 token "+sec(m.first_warmup_s)+"。每次交接校验全部前缀命中和后续 8 个 token。训练时间线只绘制实际 worker 回执，独立实验不计入训练步时。";
+}
+function showElasticTraining(m){
+ const sec3=v=>fmt(v,3)+" s";
+ const exp=m.elastic, on=exp.on.steps[step-1],off=exp.off.steps[step-1];
+ const r=on.expansion.filter(x=>x.accepted), all=exp.on.steps.flatMap(x=>x.expansion).filter(x=>x.accepted);
+ $("headline").textContent="四步实际扩容 "+all.length+" 次。计入轮末更新和权重发布，扣除初始化与 checkpoint，四步合计时间加速 "+fmt(exp.training_time_speedup,3)+"×，有效训练 token 吞吐 "+fmt(exp.training_effective_token_speedup,3)+"×。第 2、3 步时间加速 "+fmt(exp.middle_time_speedup,3)+"×。KDFlow 和 verl 沿用同场景历史实测。";
+ $("tailRound").textContent="本步关闭扩容 "+sec(off.round_s)+"，训练 "+off.tokens.toLocaleString()+" 个 token。开启扩容 "+sec(on.round_s)+"，训练 "+on.tokens.toLocaleString()+" 个 token，其中 TP4 生成 "+on.wide_tokens.toLocaleString()+" 个。"+r.map(x=>x.rid+" 在已生成 "+x.position+" 个 token 时接卡，唤醒 "+sec(x.wake_s)+"，前缀重算 "+sec(x.prefill_s)+"。").join(" ");
+ if(m.elastic_quality)$("headline").textContent+=" 同一批留出前缀的 student-to-teacher KL 为关闭 "+fmt(m.elastic_quality.off,4)+"、开启 "+fmt(m.elastic_quality.on,4)+" nats。";
+ if(r.length){
+  const handoff=r.map(x=>sec3(x.end-x.start)).join("、");
+  $("tailRound").textContent+=" 交接至可解码用时 "+handoff+"，本步归还卡组合计 "+sec3(on.release_s)+"。";
+  for(const x of r)if(x.handoff_to_first_chunk_s!=null)$("tailRound").textContent+=" 从接卡到首个 "+x.first_chunk_tokens+"-token 块返回为 "+sec3(x.handoff_to_first_chunk_s)+"。";
+ }
+ const a=round("dynamopd").actions.find(a=>a.label.includes("→ TP4")&&!a.label.includes("拒绝"));
+ $("tailFocus").hidden=!a;
+ $("tailFocus").onclick=()=>{
+  if(!a)return;
+  zoom=16;setLeft(a.a-longest()/zoom*.2);selectAction(a,true);
+  $("charts").scrollIntoView({block:"start"});
+ };
+ $("tailFocus").textContent="定位本步 TP 扩容";
+ $("tailSetup").textContent="上表是前次独立的热 KV 交接微基准。本次训练在借卡后恢复休眠的 SGLang TP4 分片并重新 prefill，实际耗时见本步回执。两组训练都使用相同的输入、采样配置和初始模型，各自产生 on-policy 回答。";
+}
+function showMeasurement(scene){
+ const m=scene.measurement, summary=scene.summary;
+ $("recorded").textContent=m?.date??"";
+ const isTail=m?.kind==="tail_tp";
+ $("measurement").hidden=!m||isTail;
+ $("tailMeasure").hidden=!isTail;
+ $("headline").hidden=!m;
+ if(!m)return;
+ if(isTail){showTailMeasurement(m);if(m.elastic)showElasticTraining(m);return}
+ const d=summary.dynamopd,k=summary.kdflow,v=summary.verl;
+ $("headline").textContent="稳态平均 "+sec(d.mean)+"/步 · 相对同布局 KDFlow，步时加速 "+fmt(k.mean/d.mean)+"×，有效 token 吞吐提升至 "+fmt(d.tps/k.tps)+"×。";
+ $("measuredRows").replaceChildren();
+ for(const sys of systems){
+  const row=el("tr");
+  for(const value of [sys==="verl"?"verl（4+4）":names[sys],fmt(summary[sys].mean),Math.round(summary[sys].tps).toLocaleString("en-US"),fmt(m.wall[sys],1),fmt(m.quality[sys],4)])row.append(el("td",value));
+  $("measuredRows").append(row);
+ }
+ $("versions").textContent="DynaMOPD 优化前 "+fmt(m.previous)+" 秒/步，提前准备教师并镜像优化器后 "+fmt(m.optimizerOnly)+" 秒/步，再镜像参数分片后 "+fmt(d.mean)+" 秒/步。相同八卡预算下，相对四卡 actor、四卡 teacher 的 verl 配置，步时加速 "+fmt(v.mean/d.mean)+"×。";
+ $("leases").textContent="四步共 "+m.count+" 次换入 14B 教师，完整交接 "+fmt(m.shortest)+"–"+sec(m.longest)+"，中位 "+sec(m.median)+"。教师退出 "+fmt(m.release[0])+"–"+sec(m.release[1])+"，待命 rank 的 CUDA context 为零。";
+ $("pressure").textContent="双卡独立测量，同一份 7B 训练状态在换岗时复制耗时 "+sec(m.evict[0])+"，提前复制 AdamW 后为 "+sec(m.evict[1])+"，参数和 AdamW 均提前复制后为 "+sec(m.evict[2])+"。另一项压力测试中，释放后立即重新申请教师耗时 "+sec(m.immediate)+"，其中 "+sec(m.wait)+" 用于等待 CPU 准备。";
+ $("quality").textContent="KL 取 32 道留出题上 128 个相同位置的学生到教师分布，初始学生为 "+fmt(m.quality.initial,4)+" nat。等质量收敛时间仍需长程实验。";
+}
+function choose(k,n,save=true){key=k;step=n;page=0;zoom=1;left=0;pin=focusSeq=null;hideTip();if(save)location.hash=k+"/"+n;
+ $("step").value=String(n);for(const b of $("cases").children)b.setAttribute("aria-pressed",String(b.dataset.case===k));
+ showMeasurement(data[k]);
+ $("scene").textContent=data[k].desc;$("selection").textContent="点击时间条或下方动作查看证据。";
+ $("counts").textContent="本步 "+round("dynamopd").actions.length+" 条操作与标记";$("group").value="-1";$("filter").value="handoff";
+ const d=round("dynamopd"),actions=d.actions,overlap=d.triple.reduce((v,x)=>v+x[1]-x[0],0);
+ $("concurrency").textContent="生成、评分、训练同时在途 "+sec(overlap)+"，轨迹终止前交付 "+d.early+" 个评分区间。长尾合并成功 "+actions.filter(x=>x.k==="move").length+" 次，被拒 "+actions.filter(x=>x.k==="reject").length+" 次。";
+ const firstTrain=actions.find(a=>a.k==="train"),restartTeacher=actions.find(a=>a.restart&&a.k==="switch");
+ const teacher=actions.find(a=>a.teacherLoad!=null);
+ const rolling=firstTrain?d.spans.filter(a=>a.k==="decode"&&a.a<=firstTrain.a&&a.b>firstTrain.a).flatMap(a=>a.g):[];
+ $("story").textContent=teacher?("GPU "+gpu(teacher.g)+" 在 "+fmt(teacher.a)+"–"+sec(teacher.b)+" 执行 "+teacher.label+"。原角色交接用时 "+sec(teacher.unload)+"，14B 教师接卡到就绪用时 "+sec(teacher.teacherLoad)+"。"):restartTeacher?("GPU "+gpu(restartTeacher.g)+" 在 "+fmt(restartTeacher.a)+"–"+sec(restartTeacher.b)+" 执行 "+restartTeacher.label+"，引擎重启换岗共 "+sec(restartTeacher.b-restartTeacher.a)+"。"):(firstTrain?("GPU "+gpu(firstTrain.g)+" 在 "+sec(firstTrain.a)+" 开始首个训练微批。"+(rolling.length?"此时 GPU "+gpu(rolling.sort((a,b)=>a-b))+" 的生成调用仍在途。":"该时刻没有在途的生成回执区间。")):"");
+ $("keys").replaceChildren();
+ const switches=actions.filter(x=>x.restart), costliest=(switches.length?switches:actions.filter(x=>["switch","publish"].includes(x.k))).sort((a,b)=>(b.b-b.a)-(a.b-a.a))[0];
+ for(const [label,act] of [["14B 教师接卡",teacher],["14B 教师退出",actions.find(a=>a.teacherExit!=null)],["首次排空",actions.find(x=>x.label==="生成组排空")],["首次评分",actions.find(x=>x.k==="score")],["首个训练微批",actions.find(x=>x.k==="train")],[switches.length?"最慢引擎重启":"最慢换岗/发布",costliest],["全组发布完成",actions.find(x=>x.label==="新权重全组就绪")]]){
+  if(act)$("keys").append(button(label+" · "+sec(act.a),()=>selectAction(act,true)));
+ }
+ $("matrix").replaceChildren();
+ for(const [k,v] of Object.entries(data)){const tr=el("tr");if(k===key)tr.className="here";const cell=el("td"),b=button(v.name,()=>{choose(k,step);$("cases").scrollIntoView({block:"center"})});b.className="rowlink";cell.append(b);tr.append(cell);
+  for(const s of systems)tr.append(el("td",fmt(v.summary[s].mean),"num"));tr.append(el("td",fmt(v.summary.kdflow.mean/v.summary.dynamopd.mean,3)+"×","num"));const kd=v.systems.kdflow;tr.append(el("td",fmt((kd[1].router.single_request_tail_s+kd[2].router.single_request_tail_s)/2),"num"));$("matrix").append(tr)}
+ $("sources").replaceChildren();for(const [label,path] of (data[k].sources ?? [["汇总数据","results.json"],["阶段统计","phases.json"],["DynaMOPD 原始事件",key+"/dynamopd/events.jsonl"],["KDFlow 事件目录",key+"/kdflow/events/"],["verl 事件目录",key+"/standalone-verl/verl/events/"]])){const a=el("a",label);a.href=path;$("sources").append(a)}
+ draw();ledger()
+}
+function selectAction(a,reveal=false,sys="dynamopd"){hideTip();pin=a.a;focusSeq=sys==="dynamopd"?a.seq:null;
+ if(reveal&&(pin<left||pin>left+longest()/zoom))setLeft(pin-longest()/zoom*.15);
+ const dec=a.decision!=null?" · 决策 "+a.decision+(a.sent!=null?"（"+sec(a.sent)+" 发令）":""):"";
+ $("selection").textContent=names[sys]+" · "+a.label+" · "+(estimated(a.k)||a.g.length===1?trackName(a.k,a.g[0]):"GPU "+gpu(a.g))+" · "+fmt(a.a,3)+" → "+fmt(a.b,3)+" s · "+a.detail+dec+(a.seq?" · trace #"+a.seq:"");
+ draw();ledger()
+}
+function ledger(){const f=$("filter").value,g=Number($("group").value);
+ allActions=round("dynamopd").actions.filter(a=>(g<0||a.g.some(id=>Math.floor(id/2)===g))&&(f==="all"||(f==="handoff"?["mark","move","reject","switch","publish","commit"].includes(a.k):f==="train"?["train","commit","reduce_grads"].includes(a.k):a.k===f)));
+ const pages=Math.max(1,Math.ceil(allActions.length/pageSize));page=Math.max(0,Math.min(page,pages-1));$("ledger").replaceChildren();
+ for(const a of allActions.slice(page*pageSize,(page+1)*pageSize)){const tr=el("tr");if(a.seq===focusSeq)tr.className="sel";tr.onclick=()=>selectAction(a,true);const title=el("td"),b=button(a.label,ev=>{ev.stopPropagation();selectAction(a,true)});b.className="rowlink";title.append(b);
+ tr.append(el("td",fmt(a.a)+" → "+fmt(a.b),"num"),el("td",a.k==="mark"?"—":fmt(a.b-a.a,3),"num"),el("td",gpu(a.g)),title,el("td",a.detail+" · #"+a.seq));$("ledger").append(tr)}
+ $("page").textContent=allActions.length+" 条 · "+(page+1)+" / "+pages+" 页";$("prev").disabled=page===0;$("next").disabled=page+1>=pages;
+}
+function hideTip(){$("tip").style.display="none"}
+function cursor(t){for(const v of graphs){const inside=t!=null&&t>=left&&t<=left+longest()/zoom;v.cursor.style.display=inside?"":"none";if(inside){const x=v.x(t);v.cursor.setAttribute("x1",x);v.cursor.setAttribute("x2",x)}}}
+function inflightAt(points,t){
+ let lo=0,hi=points.length;
+ while(lo<hi){const mid=Math.floor((lo+hi)/2);if(points[mid][0]<=t)lo=mid+1;else hi=mid}
+ return lo?points[lo-1][1]:0
+}
+function draw(){const full=longest(),width=full/zoom;$("zoom").value=String(zoom);$("pan").disabled=zoom===1;$("pan").value=zoom===1?0:1000*left/(full-width);$("window").textContent=fmt(left,1)+"–"+fmt(left+width,1)+" s";
+ const wrap=$("charts");wrap.replaceChildren();graphs=[];
+ for(const sys of systems){
+  const r=round(sys),card=el("article",null,"block chartcard"),info=el("div",null,"sysinfo"),metric=el("div",fmt(r.duration),"metric");metric.append(el("small"," s / 步"));
+  info.append(el("h3",names[sys]),metric,el("p",r.tokens.toLocaleString()+" 有效 token"),el("p",strategies[sys],"sub"));
+  const kd=sys==="kdflow";
+  const plot=el("div",null,"graph");card.append(info,plot);wrap.append(card);
+  const lanes=sys==="dynamopd"?[0,1,2,3,4,5,6,7,9]:[0,1,2,3,4,5,6,7];
+  const W=Math.max(230,plot.clientWidth-14),L=49,R=W-12,row=18,top=23;
+  const rowY=j=>top+row*j,H=rowY(lanes.length)+8,x=t=>L+(t-left)*(R-L)/width;
+  const chart=svg("svg",{viewBox:"0 0 "+W+" "+H,role:"img","aria-label":names[sys]+" 第 "+step+" 步，每卡活动时间线"});plot.append(chart);
+  const defs=svg("defs",{}),pat=svg("pattern",{id:"ended"+sys,width:6,height:6,patternUnits:"userSpaceOnUse"});pat.append(svg("path",{d:"M-2 2l4 -4M0 6l6 -6M4 8l4 -4",stroke:"#d7dfd8","stroke-width":1}));defs.append(pat);chart.append(defs);
+  for(let j=0;j<lanes.length;j++){const id=lanes[j],y=rowY(j);chart.append(svg("text",{x:L-7,y:y+12,"text-anchor":"end",class:"trackname"},kd?String.fromCharCode(65+id)+" / "+id:id===9?"三项并行":"GPU "+id),svg("rect",{x:L,y:y+1,width:R-L,height:14,fill:"#edf1ed",rx:2}));
+   const endx=Math.max(L,x(r.duration));if(endx<R)chart.append(svg("rect",{x:endx,y:y+1,width:R-endx,height:14,fill:"url(#ended"+sys+")"}))}
+  const raw=width/Math.max(2,Math.floor((R-L)/90)),pow=10**Math.floor(Math.log10(raw)),tick=([1,2,5,10].find(v=>v*pow>=raw)||10)*pow;
+  const axis=svg("g",{class:"axis"});for(let t=Math.ceil(left/tick)*tick;t<=left+width+1e-7;t+=tick){const xx=x(t);axis.append(svg("line",{x1:xx,x2:xx,y1:top-4,y2:H-6,stroke:"#ccd7d4","stroke-width":.8}),svg("text",{x:xx,y:14,"text-anchor":"middle"},Number(t.toFixed(2))+"s"))}chart.append(axis);
+  const body=svg("g",{class:"bars"});chart.append(body);
+  // Place shorter nested worker calls above the enclosing training/sync call.
+  // One chart per system. KDFlow uses the same eight rows for reconstructed
+  // generation and observed physical-worker phases. Pool transitions span all rows.
+  const spans=kd?r.spans.filter(a=>a.g[0]!==8||a.k!=="decode").concat(r.router.replica_spans):r.spans.slice();
+  const poolBand=a=>kd&&a.g[0]===8;
+  spans.sort((a,b)=>Number(poolBand(b))-Number(poolBand(a))||(b.b-b.a)-(a.b-a.a));
+  for(const a of spans){if(a.b<=left||a.a>=left+width)continue;
+   const x1=Math.max(L,x(a.a)),x2=Math.min(R,x(a.b)),pool=poolBand(a);
+   for(const id of a.g){const lane=pool?0:lanes.indexOf(id);if(lane<0)continue;
+   const y=rowY(lane)+1,w=Math.min(R-x1,Math.max(.7,x2-x1));const rect=svg("rect",{x:x1,y,width:w,height:pool?row*8-4:14,opacity:pool ? 0.48 : 1,rx:1,fill:colors[a.k],stroke:sys==="dynamopd"&&focusSeq!=null&&focusSeq===a.seq?"#152a31":"none","stroke-width":1.6});body.append(rect);
+   const text=a.k==="publish"&&sys==="dynamopd"?"恢复 / 发布 "+a.label.split(" · ").pop():a.label.split(" · ").pop();if(w>Math.max(60,text.length*9+8)){const t=svg("text",{x:x1+4,y:y+10.5,fill:a.k==="replica_wait"?"#48473f":["switch","unload"].includes(a.k)?"#2b2416":"#fff","font-size":9,"pointer-events":"none"},text);body.append(t)}
+   rect.onpointermove=ev=>{const tip=$("tip");tip.textContent=names[sys]+" · "+trackName(a.k,id)+" · "+a.label+"\n"+fmt(a.a,3)+" → "+fmt(a.b,3)+" s  /  "+sec(a.b-a.a)+"\n"+a.detail;
+    if(kd&&(estimated(a.k)||a.k==="decode")){const bounds=chart.getBoundingClientRect(),pos=(ev.clientX-bounds.left)*W/bounds.width,t=left+(pos-L)/(R-L)*width;const n=inflightAt(r.router.inflight,t);tip.textContent+="\n"+sec(t)+" · 全池实测在途 "+n+" 个请求"+(n<8?"，至少 "+(8-n)+" 张卡无生成请求可做":"")}
+    tip.style.display="block";tip.style.left=Math.max(4,Math.min(innerWidth-tip.offsetWidth-7,ev.clientX+14))+"px";tip.style.top=Math.max(4,Math.min(innerHeight-tip.offsetHeight-7,ev.clientY+12))+"px"};
+   rect.onpointerleave=hideTip;rect.onclick=()=>{const entry=sys==="dynamopd"?r.actions.find(b=>b.seq===a.seq):a;selectAction(entry||a,false,sys)}
+  }}
+  if(sys==="dynamopd"){
+   for(const [a,b] of r.triple){const lo=Math.max(L,x(a)),hi=Math.min(R,x(b));if(hi<=lo)continue;
+    for(const [j,k] of ["decode","score","train"].entries()){const piece=svg("rect",{x:lo,y:top+8*row+1+j*4.5,width:Math.max(.6,hi-lo),height:4.5,fill:colors[k]});
+     piece.append(svg("title",{},"生成、评分和训练同时在途 · "+sec(a)+" → "+sec(b)));chart.append(piece)}
+   }
+  }
+  if(x(r.duration)>=L&&x(r.duration)<=R)chart.append(svg("line",{x1:x(r.duration),x2:x(r.duration),y1:top-3,y2:H-5,stroke:"#384c46","stroke-dasharray":"2 2","pointer-events":"none"}));
+  const line=svg("line",{y1:top-3,y2:H-5,stroke:"#132b36","stroke-width":1.3,"pointer-events":"none"});chart.append(line);graphs.push({cursor:line,x});
+  chart.onpointermove=ev=>{const b=chart.getBoundingClientRect(),xx=(ev.clientX-b.left)*W/b.width;cursor(xx>=L&&xx<=R?left+(xx-L)/(R-L)*width:pin)};
+  chart.onpointerleave=()=>{hideTip();cursor(pin)};
+  if(kd){
+   const rt=r.router,footer=el("div",null,"controls kd-note");
+   footer.append(el("span","行标为生成副本（轮询重建）/ 物理 GPU（实测）。"),
+                 el("span",fmt(rt.end-rt.single_request_tail_s)+"–"+sec(rt.end)+" 仅余一个请求，至少七张卡等待。"),
+                 button("放大生成长尾",()=>tailFocus(rt)));plot.append(footer)
+  }
+ }cursor(pin)
+}
+setup();
+</script></body></html>

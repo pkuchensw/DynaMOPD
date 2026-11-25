@@ -1,0 +1,39 @@
+{
+  "sim_policy": "cost_search",
+  "engine": "hf_reference",
+  "model_root": "models",
+  "student": "Qwen3-1.7B",
+  "teachers": {
+    "math": "Qwen3-8B",
+    "gsm8k": "Qwen3-4B-Base"
+  },
+  "groups": 8,
+  "rounds": 2,
+  "batch_size": 16,
+  "quantum": 8,
+  "score_chunk": 48,
+  "score_batch": 8,
+  "score_budget": 4096,
+  "teacher_kv_tokens": 8192,
+  "decode_batch": 3,
+  "microbatch": 4,
+  "train_budget": 2048,
+  "max_new_tokens": 1024,
+  "max_prompt": 512,
+  "temperature": 1,
+  "lr": 0.00001,
+  "clip": 1,
+  "seed": 1901,
+  "tail_prior": 80,
+  "kv_bytes_per_token": 114688,
+  "memory_margin": 1073741824,
+  "costs": {
+    "switch": 0.65,
+    "score_base": 0.02,
+    "score_token": 0.006,
+    "decode_step": 0.018,
+    "prefill_token": 0.00015,
+    "train_token": 0.004,
+    "move_base": 0.018
+  }
+}

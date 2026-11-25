@@ -1,0 +1,8 @@
+{
+  "transport": "ray",
+  "address": "auto",
+  "node_count": 4,
+  "groups_per_node": 4,
+  "cpus_per_group": 4,
+  "placement_timeout_s": 180
+}

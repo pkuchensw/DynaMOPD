@@ -1,0 +1,11 @@
+{
+  "narrow_token_s": 0.0105434,
+  "wide_token_s": 0.0058622,
+  "enter_s": 0.45,
+  "exit_s": 0.25,
+  "prefill_token_s": 5.3e-05,
+  "source_tp": 1,
+  "target_tp": 4,
+  "wake_bytes_per_gpu": 4232052736,
+  "idle_bytes_per_gpu": 2839085056
+}

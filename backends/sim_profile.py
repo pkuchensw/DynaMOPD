@@ -1,0 +1,110 @@
+"""Worker timing primitives shared by trace fitting, prediction and virtual execution."""
+from pathlib import Path
+from statistics import median
+
+
+def engine_classes(cfg):
+    if cfg.get("sim_engine_classes"):
+        return cfg["sim_engine_classes"]
+    paths = dict(rollout=cfg["student"], **cfg["teachers"])
+    if cfg.get("inference_layout") != "single":
+        return paths
+    from ..workers.model import inference_signature
+    limit = cfg["max_prompt"] + cfg["max_new_tokens"] + 1
+    return {role: inference_signature(path, limit, cfg.get("qwen2_dynamic_rope", False))
+            if (Path(path) / "config.json").is_file() else path for role, path in paths.items()}
+
+
+def decode_roofline(cfg):
+    c = cfg["costs"]
+    defaults = dict(F=c["decode_step"], W=c["decode_step"]*.7, G=c["prefill_token"], A_d=2e-7)
+    return dict(defaults, **cfg.get("sim_decode_roofline", {}))
+
+
+def train_width(lengths, cfg):
+    """Critical rank input tokens, matching FSDP2 packed or padded rank assignment."""
+    world = cfg.get("group_size", 1)
+    if cfg.get("trainer_attention") == "flash_attention_2":
+        loads = [0] * world
+        for length in sorted(lengths, reverse=True):
+            rank = min(range(world), key=loads.__getitem__)
+            loads[rank] += max(1, length - 1)
+        return max(loads)
+    return max(max(part) * len(part) for i in range(min(world, len(lengths)))
+               if (part := lengths[i::world]))
+
+
+def switch_keys(old, new, phase, engine_action, resident, owner, teachers):
+    """Back off within the same publication/engine mechanism, never across a restart or lease."""
+    a, b = ("teacher" if role in teachers else role for role in (old, new))
+    prefix = (phase, engine_action)
+    for suffix in ((old, new, resident, owner), (a, b, resident, owner), (a, b, owner),
+                   (a, b), (b,)):
+        yield "|".join(map(str, prefix + suffix))
+
+
+class SwitchState:
+    def __init__(self, cfg, classes):
+        self.cfg = cfg
+        self.classes = classes
+        self.engine = classes["rollout"]
+        self.resident = False
+        self.wake_calibrated = bool(cfg.get("calibrate_engine_wake"))
+
+    def release_key(self, old, publish, owner):
+        if publish and old == "train":
+            return f"train|{self.wake_calibrated}|{owner}"
+        return None
+
+    def keys(self, old, new, publish, owner):
+        phase = "publish" if publish else ("initial" if old == "cold" else "service")
+        lifecycle = self.cfg.get("sim_teacher_lifecycle", "lease")
+        if lifecycle not in ("lease", "restart"):
+            raise ValueError("sim_teacher_lifecycle must be lease or restart")
+        if lifecycle == "restart":
+            mechanism = "restart" if new in self.classes and self.classes[new] != self.engine else "warm"
+        else:
+            dedicated = {role for role in self.cfg["teachers"] if self.classes[role] != self.classes["rollout"]}
+            mechanism = ("release+activate" if old in dedicated and new in dedicated else
+                         "release" if old in dedicated else "activate" if new in dedicated else "warm")
+        return list(switch_keys(old, new, phase, mechanism, self.resident, owner, self.cfg["teachers"]))
+
+    def advance(self, new, trainer_device=None):
+        if new == "train":
+            self.resident = False
+        elif trainer_device is not None:
+            self.resident = trainer_device == "cuda"
+        if new in self.classes and self.cfg.get("sim_teacher_lifecycle", "lease") == "restart":
+            if self.engine != self.classes[new]:
+                self.wake_calibrated = False
+            self.engine = self.classes[new]
+
+
+def fitted_switch(profile, keys, release_key=None):
+    for key in keys:
+        if key in profile.get("switches", {}):
+            cell = profile["switches"][key]
+            release = profile.get("trainer_release", {}).get(release_key)
+            return key, dict(cell, **release) if release else cell
+    return None, None
+
+
+def fit_line(points):
+    """Robust affine fit on short/long batches with nonnegative phase times."""
+    ordered = sorted(points)
+    n = max(1, len(ordered) // 3)
+    lo, hi = ordered[:n], ordered[-n:]
+    x0, x1 = (median(x for x, _ in group) for group in (lo, hi))
+    if x1 == x0:
+        return [0., median(t / x for x, t in points)]
+    slope = max(0., (median(t for _, t in hi) - median(t for _, t in lo)) / (x1 - x0))
+    base = max(0., median(t - slope * x for x, t in points))
+    return [base, median(max(0., t - base) / x for x, t in points)]
+
+
+def train_seconds(cfg, lengths):
+    coeff = cfg.get("sim_worker_profile", {}).get("train")
+    if coeff:
+        return coeff[0] + coeff[1] * train_width(lengths, cfg)
+    return cfg["costs"]["train_token"] * sum(lengths)
+

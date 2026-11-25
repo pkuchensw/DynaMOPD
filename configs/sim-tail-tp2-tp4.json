@@ -1,0 +1,16 @@
+{
+  "description": "Illustrative Qwen2.5-7B sensitivity model. Timing and bandwidth values are assumptions, not H20 measurements.",
+  "attention_heads": 28,
+  "kv_heads": 4,
+  "roofline_by_tp": {
+    "2": {"F": 0.018, "W": 0.0126, "G": 0.00015, "A_d": 0.0000002},
+    "4": {"F": 0.013, "W": 0.0105, "G": 0.00012, "A_d": 0.00000014}
+  },
+  "communicator_s": 0.08,
+  "enter_s": 0.012,
+  "exit_s": 0.01,
+  "teacher_to_student_s": 0.65,
+  "student_to_teacher_s": 0.65,
+  "kv_bandwidth_bytes_s": 40000000000,
+  "scratch_bytes_per_gpu": 268435456
+}
