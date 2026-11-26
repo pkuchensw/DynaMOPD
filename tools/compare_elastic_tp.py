@@ -3,29 +3,44 @@ import argparse
 import json
 from pathlib import Path
 
-from DynaMOPD.tools.compare_results import summarize
+from DynaMOPD.tools.audit import audit
 
 
 def read(path):
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def events(path):
-    with path.open() as f:
-        return [json.loads(line) for line in f]
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            yield json.loads(line)
 
 
 def collect(folder):
-    job = folder/"dynamopd"
-    stats = summarize(folder,training_only=True,systems=["dynamopd"])["dynamopd"]
-    trace = events(job/"events.jsonl")
-    config = read(folder/"config.json")
+    job = folder
+    if not (job/"events.jsonl").is_file():
+        wrapper = read(folder/"config.json")
+        job = folder/wrapper.get("dynamopd_run", "dynamopd")
+    manifest = read(job/"run.json") if (job/"run.json").is_file() else {}
+    if manifest and (manifest.get("exit_code") != 0 or manifest.get("system") != "dynamopd"):
+        raise ValueError(f"no successful DynaMOPD run in {job}")
+    trace = list(events(job/"events.jsonl"))
+    if not trace or trace[-1]["event"] != "run_finished":
+        raise ValueError(f"incomplete training trace in {job}")
+    launch = next(e for e in trace if e["event"] == "config")
+    if launch["backend"] != "sglang_fsdp2":
+        raise ValueError("TP timings require two SGLang/FSDP2 training runs")
+    config = launch["config"]
+    placements = next(e["placements"] for e in trace if e["event"] == "executor_ready")
     base_tp = config.get("inference_tp_size", config.get("group_size"))
     rounds = []
-    for v,duration in enumerate(stats["round_s"]):
+    for result in audit(job)["rounds"]:
+        v, duration = result["version"], result["round_s"]
         step = [e for e in trace if e.get("version")==v]
         requests = next(e for e in step if e["event"]=="round_start")["requests"]
         inputs = {r["rid"]:r for r in requests}
+        if len(inputs) != len(requests) or len(inputs) != config["batch_size"]:
+            raise ValueError(f"request count differs from the configured batch in {job} version {v}")
         pending = {}
         chunks = []
         expansions = []
@@ -69,25 +84,64 @@ def collect(folder):
         commit = next(e for e in step if e["event"]=="complete" and e.get("op")=="commit")
         checkpoint_s = sum(commit[name] for name in ("dcp_write_s","gather_weights_s","hf_export_s"))
         publications = [e for e in step if e["event"]=="complete" and e.get("weight_sync")=="tensor"]
-        source = next(e for e in publications if e["gpu"]==e["publish_source"])
-        rounds.append(dict(version=v,round_s=duration,tokens=stats["effective_training_tokens"][v],
+        source = next((e for e in publications if e["gpu"]==e["publish_source"]), {})
+        rounds.append(dict(version=v,round_s=duration,tokens=result["training_tokens"],
                            checkpoint_s=checkpoint_s,training_s=duration-checkpoint_s,
                            expansion=expansions,wide_chunks=len(wide),wide_tokens=sum(c["tokens"] for c in wide),
                            wide_decode_s=sum(c["s"] for c in wide),
                            release_s=sum(e["end"]-e["start"] for e in step if e.get("op")=="tp_shrink" and e["event"]=="complete"),
                            publisher_state_device=source.get("trainer_state_device"),
-                           publisher_free_bytes_after=source["free_bytes"],
+                           publisher_free_bytes_after=source.get("free_bytes"),
                            publisher_allocated_bytes=source.get("publisher_allocated_bytes"),
                            wide_publication_longest_group_s=max((e.get("wide_publish_s",0) for e in step if e["event"]=="complete"),default=0),
+                           requests=inputs,lengths=positions,
                            single_chunks=[{k:v for k,v in c.items() if k!="ids"} for c in chunks if "rid" in c]))
-    return dict(manifest=read(job/"run.json"),steps=rounds,wall_s=stats["wall_s"],
-                questions=stats["verified_questions_per_step"],bootstrap=next((e["meshes"] for e in trace if e["event"]=="wide_mesh_ready"),[]))
+    if not rounds or len(rounds) != config["rounds"]:
+        raise ValueError(f"recorded training rounds differ from the configured run in {job}")
+    wall = manifest["end"] - manifest["start"] if manifest else None
+    run = dict(steps=rounds,wall_s=wall,questions=[],bootstrap=next((e["meshes"] for e in trace if e["event"]=="wide_mesh_ready"),[]))
+    return job, config.copy(), placements, manifest, run
+
+
+def samples(job, step):
+    v = step["version"]
+    requests, lengths = step.pop("requests"), step.pop("lengths")
+    identities, responses = {}, {}
+    for row in events(job/f"samples-v{v}.jsonl"):
+        rid = row["rid"]
+        req = requests.get(rid)
+        if not req or rid in identities or row["version"] != v:
+            raise ValueError(f"unexpected sample {rid} in {job} version {v}")
+        limit = row.get("max_new_tokens", req["max_new_tokens"])
+        if ((req["seed"], req["teacher"], req["prompt_tokens"], req["max_new_tokens"], lengths[rid])
+                != (row["seed"], row["teacher"], len(row["prompt"]), limit, len(row["response"]))):
+            raise ValueError(f"sample {rid} disagrees with its trace in {job}")
+        identities[rid] = (row["prompt"], row["teacher"], row["seed"], limit)
+        responses[rid] = row["response"]
+    if identities.keys() != requests.keys():
+        raise ValueError(f"missing samples in {job} version {v}")
+    return identities, responses
 
 
 def compare(off,on):
-    cfgs = [read(folder/"config.json") for folder in (off,on)]
+    jobs, cfgs, placements, manifests, runs = zip(*(collect(folder) for folder in (off,on)))
+    base, wide = runs
+    versions = [[step["version"] for step in run["steps"]] for run in runs]
+    start = versions[0][0]
+    if versions[0] != versions[1] or versions[0] != list(range(start, start + len(versions[0]))):
+        raise ValueError("round versions differ or are not consecutive")
+    if start:
+        paths = [Path(cfg["state_dir"])/f"v{start}" for cfg in cfgs]
+        if not all((p/"training"/".metadata").is_file() for p in paths) or not paths[0].samefile(paths[1]):
+            raise ValueError(f"cannot verify a common starting checkpoint for resumed version {start}")
+    if placements[0] != placements[1]:
+        raise ValueError("physical GPU placements differ")
+    meshes = []
     for expected, cfg in zip((False, True), cfgs, strict=True):
+        for key in ("state_dir","log_dir","export_dir","run_name","dynamopd_run"):
+            cfg.pop(key, None)
         mesh = cfg.pop("rollout_tp_expansion", None)
+        meshes.append(mesh)
         policy = cfg.get("policy", "cost_search")
         if policy in ("merge", "elastic_tp"):
             enabled = bool(mesh) and policy == "elastic_tp"
@@ -101,42 +155,42 @@ def compare(off,on):
             raise ValueError(f"{policy} cannot isolate TP expansion from other policy changes")
         if enabled != expected:
             raise ValueError("TP comparison requires an expansion-disabled run followed by an expansion-enabled run")
-    if cfgs[0]!=cfgs[1]:
-        raise ValueError("non-TP benchmark options differ")
-    base,wide = collect(off),collect(on)
-    for field in ("dataset_sha256","parallel_layout","batch","rounds","cap","devices","sglang_options"):
-        if base["manifest"][field]!=wide["manifest"][field]:
-            raise ValueError(f"benchmark manifest mismatch for {field}")
+    if cfgs[0]!=cfgs[1] or (all(meshes) and meshes[0]!=meshes[1]):
+        raise ValueError("non-TP training options or configured TP meshes differ")
+    if all(manifests):
+        for field in ("source_sha256","dataset_sha256","parallel_layout","batch","rounds","cap","devices","sglang_options"):
+            if manifests[0].get(field) != manifests[1].get(field):
+                raise ValueError(f"run manifest mismatch for {field}")
     pairs = []
     for small,large in zip(base["steps"],wide["steps"],strict=True):
         lookup = {(c["rid"],c["position"]):c for c in small["single_chunks"] if not c["wide"]}
         matched = [(c,lookup.get((c["rid"],c["position"]))) for c in large["single_chunks"] if c["wide"]]
         matched = [(a,b) for a,b in matched if b and b["tokens"]==a["tokens"]]
-        if not matched:
-            continue
         v = large["version"]
-        left,right = [{r["rid"]:r for r in events(folder/"dynamopd"/f"samples-v{v}.jsonl")} for folder in (off,on)]
+        (off_ids, left), (on_ids, right) = [samples(job, step) for job, step in zip(jobs, (small, large), strict=True)]
+        if off_ids != on_ids:
+            raise ValueError(f"request IDs, prompts, teacher routes, seeds or response limits differ at version {v}")
+        for run in runs:
+            run["questions"].append(len(left))
         exact = []
         identical_continuation = []
         for a,b in matched:
             rid,n = a["rid"],a["position"]
-            assert left[rid]["prompt"]==right[rid]["prompt"] and left[rid]["seed"]==right[rid]["seed"]
-            if left[rid]["response"][:n]==right[rid]["response"][:n]:
+            if left[rid][:n]==right[rid][:n]:
                 exact.append((a,b))
                 end = n+a["tokens"]
-                if left[rid]["response"][n:end]==right[rid]["response"][n:end]:
+                if left[rid][n:end]==right[rid][n:end]:
                     identical_continuation.append((a,b))
         def total(p):
             return dict(chunks=len(p),tokens=sum(a["tokens"] for a,b in p),narrow_s=sum(b["s"] for a,b in p),
                         wide_s=sum(a["s"] for a,b in p))
-        identical_responses = sum(left[rid]["response"]==right[rid]["response"] for rid in left)
+        identical_responses = sum(left[rid]==right[rid] for rid in left)
         pairs.append(dict(version=v,identical_responses=identical_responses,requests=len(left),
                           at_same_request_and_position=total(matched),same_input_tokens=total(exact),
                           same_input_and_output_tokens=total(identical_continuation)))
     for run in (base,wide):
         for step in run["steps"]:
             del step["single_chunks"]
-        del run["manifest"]
     def rate(run,interval):
         rows = run["steps"][interval]
         return sum(r["tokens"] for r in rows)/sum(r["round_s"] for r in rows)

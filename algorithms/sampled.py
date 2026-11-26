@@ -11,16 +11,16 @@ class SampledReverseKL(DistillationAlgorithm):
 
 
 class OnPolicyK1(DistillationAlgorithm):
-    """verl K1 policy gradient for one optimizer step at the frozen round policy."""
+    """Clipped sampled K1 for one optimizer step at the frozen round policy."""
 
     recompute_old = True
 
     def token_loss(self, batch: TokenBatch):
-        from .verl_k1 import policy_loss
+        from .token_losses import clipped_k1
 
         if batch.old_logp is None:
             raise ValueError("K1 requires log probabilities recomputed by the frozen actor")
-        return policy_loss(batch.student_logp, batch.old_logp, batch.teacher_logp)
+        return clipped_k1(batch.student_logp, batch.old_logp, batch.teacher_logp)
 
 
 class SampledForwardKL(DistillationAlgorithm):

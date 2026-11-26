@@ -90,7 +90,7 @@ class TensorPublisher:
             raise RuntimeError("incomplete NCCL publication group")
 
     def prepare_ipc(self):
-        # Match verl's IPC allocator mode. Restore explicit training allocator
+        # CUDA IPC needs shareable allocations. Restore the training allocator
         # settings after SGLang acknowledges the last bucket.
         settings = os.environ.get("PYTORCH_CUDA_ALLOC_CONF") or os.environ.get("PYTORCH_ALLOC_CONF", "")
         ipc_settings = re.sub(r"\bexpandable_segments\s*:\s*True\b", "expandable_segments:False", settings)

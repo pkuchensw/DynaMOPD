@@ -1,7 +1,0 @@
-DynaMOPD includes portions of verl.
-
-Copyright 2023-2024 Bytedance Ltd. and/or its affiliates
-
-The vendored portions, their modifications and their provenance are described
-in licenses/verl.md. The accompanying upstream license and notice are in
-licenses/verl-LICENSE.txt and licenses/verl-NOTICE.txt.

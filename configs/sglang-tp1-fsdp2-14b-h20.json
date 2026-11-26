@@ -67,23 +67,6 @@
   "rollout_sampling_mode": "batch_invariant",
   "frozen_teacher_tensor_sync": true,
   "calibrate_engine_wake": true,
-  "benchmark_devices": [
-    0,
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7
-  ],
-  "verl_teacher_gpus": 4,
-  "kdflow_keep_optimizer": true,
-  "kdflow_synchronous_teacher": true,
-  "benchmark_systems": [
-    "dynamopd",
-    "kdflow"
-  ],
   "sglang_limits": {
     "max_running_requests": 128,
     "cuda_graph_max_bs": 128,

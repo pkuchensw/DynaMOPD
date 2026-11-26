@@ -36,9 +36,12 @@ include-package-data = false
 packages = [
     "DynaMOPD", "DynaMOPD.algorithms", "DynaMOPD.backends",
     "DynaMOPD.backends.hf_reference", "DynaMOPD.cluster", "DynaMOPD.scheduler",
-    "DynaMOPD.trainer", "DynaMOPD.workers", "DynaMOPD.tools", "DynaMOPD.tools.baselines", "DynaMOPD.utils",
+    "DynaMOPD.trainer", "DynaMOPD.workers", "DynaMOPD.tools",
 ]
 
 [tool.setuptools.package-data]
-DynaMOPD = ["NOTICE", "configs/*.json", "data/native-smoke.jsonl", "data/smoke.jsonl", "launch.sh", "examples/*.sh", "licenses/*.txt", "licenses/*.md"]
-"DynaMOPD.tools" = ["paper_report.template.html", "scenario_timeline.template.html", "timeline.html"]
+DynaMOPD = [
+    "README.md", "README_CN.md", "docs/*.md", "LICENSE", "pyproject.toml",
+    "configs/*.json", "data/native-smoke.jsonl", "data/smoke.jsonl", "launch.sh", "examples/*.sh",
+]
+"DynaMOPD.tools" = ["timeline.html"]

@@ -1,12 +1,12 @@
-# 按真实 worker 回执校准模拟器
+# Calibrating the simulator from worker traces
 
-DynaMOPD 的 H20 配置在 CLI 中使用 `--simulate` 时默认选择 `cost_search`。Python 入口可显式传入 `fit(dict(config, policy="cost_search"), simulate=True, ...)`。真机训练沿用配置中的 `policy`。校准文件与模型、训练布局、引擎生命周期配套使用。
+The bundled H20 recipes select `cost_search` when the CLI runs with `--simulate`. From Python, set the policy explicitly with `fit(dict(config, policy="cost_search"), simulate=True, ...)`. Training on hardware uses the `policy` in the job configuration. Use a calibration profile that matches the models, training layout, and engine lifecycle.
 
-## 单动作预测与真机核对
+## Validate individual action predictions
 
-使用 同一台八卡 H20 上的五组 SGLang/FSDP2 实验，各自在 v0、v1 的回执上拟合，在同一场景留出的 v2 预测。每次预测可以使用该动作之前已回执的状态。下表是按 worker 动作统计的平均绝对误差，单位为秒。四组卡同时发布会产生四条回执。
+Five SGLang/FSDP2 experiments ran on the same eight-GPU H20 node. In each scenario, the model was fitted to worker receipts from v0 and v1, then evaluated on held-out v2. Each prediction could use state reported by previously completed actions. The table shows mean absolute error in seconds per worker action. A simultaneous weight publication across four groups produces four receipts.
 
-| 场景 | 服务换岗，方向基线 → 新模型 | 权重发布，方向基线 → 新模型 | 训练微批，总 token 基线 → 新模型 |
+| Scenario | Role switch, direction baseline → fitted model | Weight publication, direction baseline → fitted model | Training microbatch, total-token baseline → fitted model |
 |---|---:|---:|---:|
 | control | 0.406 → 0.350 | 0.472 → 0.153 | 0.064 → 0.043 |
 | cap16k | 0.315 → 0.091 | 1.096 → 0.677 | 0.215 → 0.069 |
@@ -14,42 +14,42 @@ DynaMOPD 的 H20 配置在 CLI 中使用 `--simulate` 时默认选择 `cost_sear
 | math-student | 0.287 → 0.302 | 0.728 → 0.240 | 0.106 → 0.122 |
 | teacher14b | 10.441 → 1.350 | 39.215 → 2.234 | 0.159 → 0.068 |
 
-方向基线使用同一拟合集的角色对卸载、加载中位数，并复现原先发布额外叠加的同步时间。训练基线使用实测每 token 中位耗时。分项覆盖数和原始误差保存在结果目录。
+The direction baseline uses the median unload and load times for each source/destination role pair in the fitting set. It also reproduces the previous publication estimate's extra synchronization charge. The training baseline uses the measured median time per token. The results directory records coverage counts and individual errors.
 
-- 换岗模型区分训练状态驻留、优化器所在组、共享引擎换权重、旧引擎重启和异构教师 rank 启停。旧单引擎重启会使原唤醒显存标定失效。样本少的组合退回同类机制的较粗分组。模拟回执中的 `cost_profile_key` 和 `cost_profile_samples` 指出所用分组，`cost_profile_fallback` 表示使用配置估计。
-- 多组 tensor 发布使用同一个 rendezvous。本地准备时间剔除回执中包含等待的 `tensor_publish_s`。模拟器在最慢组就绪后计一次共享传输，`publish_wait_s` 记录较早就绪的组等了多久。共享传输时间由同一轮耗时最短参与者的 tensor 调用估计，尾部逐卡唤醒与分桶细节仍是近似。
-- 训练按实际 FSDP2 分片计算最慢 rank 的输入宽度，分别处理长度均衡的 packed batch 和逐 rank 的 padding。微批固定成本与 token 边际成本从历史训练回执拟合。
-- 迁移按目标推理副本核算上下文、下一次 decode 的 KV 余量和块容量。普通迁移搬运请求状态并重新 prefill，宽 TP 转换按 KV 头重分片计费。释放 teacher KV 后，已交付监督仍有效，后续 chunk 在缺少 KV 时支付上下文重算成本。
-- 回放中每条迁移回执的 `move_cost_source` 标明固定耗时 `move_base_s` 的来源。优先使用拟合的成功或拒收成本，再查标量迁移成本。缺少迁移计时时，SimRL 用本轮普通 Ray 调用中位往返开销的两倍估算两次控制调用（`rpc_overhead_proxy`）。缺少有效 RPC 计时时则用两倍评分启动耗时近似（`score_launch_proxy`）。单一评分长度可能使拟合截距为零。此时优先使用校准轮短评分批次的正耗时（`short_score_batch_proxy`），旧配置可用每 token 的正评分耗时（`single_score_token_proxy`）。缺少正耗时依据会报错。源端排空后可能需要刷新缓存，这些估算可能低估这部分耗时。目标端 KV 重建单独计时。含估算值的回放可用于调度敏感性分析，验证真机迁移收益仍需实测。
+- **Role switches.** The model distinguishes training-state residency, the group that owns the optimizer, weight replacement in a shared engine, legacy engine restarts, and starting or stopping ranks for heterogeneous teachers. Restarting the legacy single engine invalidates its previous wake-up memory calibration. Sparse groups of observations fall back to a coarser grouping for the same mechanism. Simulated receipts record the group in `cost_profile_key` and its sample count in `cost_profile_samples`. The `cost_profile_fallback` field identifies estimates taken from configuration.
+- **Weight publication.** Groups publishing tensors share a rendezvous. The local preparation estimate excludes `tensor_publish_s` because that measurement includes waiting. Once the slowest group is ready, the simulator charges a single shared transfer. Each earlier group's wait appears in `publish_wait_s`. The transfer estimate uses the shortest participating tensor call in that round. Per-device wake-up and bucket processing near the end remain approximate.
+- **Training.** The model calculates the input width on the slowest rank using the actual FSDP2 assignments. It accounts for length-balanced packed batches and per-rank padding separately. Historical training receipts determine the fixed microbatch cost and marginal cost per token.
+- **Migration.** The model accounts for each destination inference replica's context, KV headroom for the next decode, and block capacity. Ordinary migration transfers request state and repeats prefill. The wide-TP KV resharding model charges for redistributing KV heads. Releasing teacher KV preserves supervision already delivered. Subsequent chunks pay to recompute context when the KV is missing.
+- **Migration timing.** Each replay receipt records the source of its fixed `move_base_s` cost in `move_cost_source`. The simulator first tries fitted costs for accepted or rejected moves, then a scalar migration cost. With no measured migration time, it estimates two control calls at twice the round's median ordinary Ray RPC overhead (`rpc_overhead_proxy`). Without valid RPC timings, it uses twice the scoring startup time (`score_launch_proxy`). Fitting to just one scoring length can yield a zero intercept. The simulator then prefers the positive duration of a short scoring batch in the calibration round (`short_score_batch_proxy`). Older profiles can use a positive per-token scoring time (`single_score_token_proxy`). The simulator raises an error if it has no positive timing to use. These estimates may understate cache flushing after the source drains. Rebuilding KV at the destination is timed separately. Replays using proxy timings support scheduling sensitivity analysis. Measuring migration gains requires hardware runs.
 
-五个场景四轮中，71 次切入训练的动作里只有 10 次回收了已记录的 teacher 前缀，最大合计上下文为 15,191 token。这个计数来自 worker 驱逐的轨迹 ID 和此前回执的前缀长度。现有样本不足以区分 KV 池接近满载时的释放耗时与权重或训练状态搬运，因此当前没有按每 GB 额外收取一项切换费。表中的 14B 数据采用旧引擎重启流程。异构教师按进程接卡的实测回执和校准数据见下文。
+Across four rounds in each of the five scenarios, only 10 of 71 switches into training reclaimed recorded teacher prefixes. The largest total context reclaimed in one switch was 15,191 tokens. The count uses trajectory IDs evicted by the worker and their previously reported prefix lengths. There are too few observations to isolate the cost of releasing a nearly full KV pool from the cost of moving weights or training state. The model therefore charges no additional switch cost per GB. The table's 14B scenario used the legacy engine restart path. The teacher activation section below covers the process-based path and its calibration.
 
-## 调度动作
+## Scheduling decisions
 
-每次结算完成事件后，控制器用可见前缀、当前归属、历史输出长度和在途工作预测剩余轮时。回放器使用保存的真实长度推进生成。调度器只看到已经公布的 token。
+After settling a completion event, the controller predicts the time remaining in the round using visible prefixes, current ownership, historical output lengths, and in-flight work. The replay engine uses recorded response lengths to advance generation. The scheduler sees only tokens that have already been reported.
 
-真机和 SimRL 共用轮最大回复长度的指数移动平均（EMA）。每个成功轮次取所有请求实际生成的最大 token 数，包括 EOS 和达到上限的回复。首轮最大值初始化 EMA，之后每轮更新一次。作业 JSON 中的 `max_length_ema_alpha` 是新观测的权重，默认 0.2，可设为 `null` 复现原估计策略。每轮开始的 `round_start.max_length_ema` 是本轮可用的估计，结束的 `round_end.max_response_tokens` 和 `round_end.max_length_ema` 是实际最大值与更新结果。
+Hardware and SimRL runs both maintain an exponential moving average (EMA) of the maximum response length per round. Each successful round contributes its longest generated response, including responses that reached EOS or the length limit. The first observation initializes the EMA, which updates once per round thereafter. The JSON option `max_length_ema_alpha` weights the new observation and defaults to 0.2. Set it to `null` to reproduce the earlier estimator. The trace records the estimate available at the start in `round_start.max_length_ema`, and the observed maximum and updated estimate in `round_end.max_response_tokens` and `round_end.max_length_ema`.
 
-默认在第 0 轮把回答长度上限作为批内最长回复的先验。从仍有机会达到最高上限的活跃请求中，取已生成前缀最长的一条承载该估计，其余请求沿用常规估计。若某条已结束回复已经达到所有剩余请求的上限，就不再额外预测一条长尾。搜索事件的 `cold_start_tail` 记录本次承担该先验的轨迹 ID。采样仍按实际 EOS 或长度上限结束。设置 `max_length_ema_alpha=null` 同时停用此首轮先验和后续 EMA。
+In round 0, the default prior for the longest response in the batch is the response limit. Among active requests that can still reach the highest limit, the scheduler assigns this estimate to the one with the longest generated prefix. Other requests use the ordinary estimator. If a completed response has already reached the highest limit among all remaining requests, the scheduler predicts no additional long tail. Search events record the trajectory carrying the prior in `cold_start_tail`. Actual sampling ends at EOS or at the request's limit. Setting `max_length_ema_alpha=null` disables both the first-round prior and later EMA updates.
 
-后续轮次剩最后一条活跃请求时，调度器用 EMA 减去已生成长度估计剩余 token，并按该请求自己的回答上限截断。多请求并行、缺少历史 EMA 或前缀已经达到 EMA 时，使用同路由的条件长度估计，没有合适样本时使用 `tail_prior`。最后完成的请求有可能较晚才开始解码，这时轮最大值可能高估它的长度。可恢复的训练检查点随权重保存 `scheduler.json`。
+In later rounds, once only one active request remains, the scheduler estimates its remaining tokens by subtracting its generated length from the EMA and respecting its own response limit. When several requests remain, no historical EMA exists, or the prefix has reached the EMA, the scheduler uses a conditional length estimate for that route. Without suitable observations it uses `tail_prior`. A request that started decoding late can finish last even with a short response, so the round maximum can overestimate its length. Resumable training checkpoints store `scheduler.json` alongside the weights.
 
-搜索空间包含自然排空、有方向的双组迁移、不同评分组集合、按就绪时间或按教师安排批次、提前评分或等待后续前缀、在空闲组执行就绪微批，以及租用教师提前退回 standby。提供宽 TP profile 时，也比较借卡扩容、继续宽 TP 和缩回。宽 TP 执行器目前只支持同节点一对卡组承载最后一条活跃请求。每个候选都估算组排空时间、角色代价、评分和训练依赖、梯度归约和权重发布，再派发所选计划当前可执行的动作。多个互不冲突的组可以同时执行。
+The search considers natural draining, directed migration between groups, different sets of scoring groups, batches ordered by readiness or by teacher, scoring a live prefix or waiting for more tokens, training a ready microbatch on an idle group, and releasing a leased teacher to standby early. A wide-TP profile also makes expansion, continued wide decoding, and shrinking available. The current wide-TP executor runs the last active request on a pair of groups on the same node. For each candidate, the planner estimates group drain times, role transitions, scoring and training dependencies, gradient reduction, and weight publication. It dispatches the actions in the selected plan that can start immediately. Independent groups can run concurrently.
 
-`policy_options.max_pairs` 限定每次比较的有向迁移候选数，默认 12，按估计搬运成本排序。`score_group_sets` 可补充评分组组合，`score_batch_sizes` 和 `train_batch_sizes` 可加入预设批量。配置里的 batch 和显存上限仍生效。没有按剩余请求数强制合并的触发条件。可以在 `schedule_search` 事件中检查 `layouts[].finish_s`、`chosen_layout`、`defer_live_prefix` 和所选服务组，再用相邻的 `dispatch`、`complete` 检查动作是否执行。预测的剩余轮时用于排序，包含对未来到达和可用性的近似；CPU 搜索时间不计入虚拟 GPU 时间。
+`policy_options.max_pairs` limits how many directed migration candidates enter each comparison. The default is 12, ordered by estimated movement cost. Supply `score_group_sets` for additional combinations of scoring groups or `score_batch_sizes` and `train_batch_sizes` for additional batch sizes. Configured batch and memory limits still apply. The scheduler has no mandatory merge threshold based on the remaining request count. Inspect `layouts[].finish_s`, `chosen_layout`, `defer_live_prefix`, and the chosen service groups in `schedule_search` events, then check adjacent `dispatch` and `complete` events for actual execution. Predicted time to round completion ranks candidates and approximates future arrivals and availability. CPU search time is excluded from virtual GPU time.
 
-## 同负载 CPU 回放
+## CPU replay on matched workloads
 
-分别以保留的自然排空策略和新策略回放四轮，每轮 512 条真实样本。两种策略在同一场景下的每轮生成与训练 token 一致。表中取中间两轮 v1、v2 的虚拟耗时均值，含梯度归约和发布。
+Both the natural-drain policy and cost search replayed four rounds of 512 recorded samples per round. Within a scenario, the policies generated and trained on identical token counts in each round. The table reports the mean virtual duration of the two middle rounds, v1 and v2, including gradient reduction and weight publication.
 
-| 场景 | 自然排空 | 成本搜索 | 自然排空时间 / 搜索时间 |
+| Scenario | Natural draining | Cost search | Natural draining / cost search |
 |---|---:|---:|---:|
 | control | 94.53 s | 99.92 s | 0.95× |
-| teacher14b，旧引擎重启流程 | 205.81 s | 157.71 s | 1.31× |
+| teacher14b, legacy engine restart | 205.81 s | 157.71 s | 1.31× |
 
-7B 对照里的搜索在 v1、v2 分别完成了 1、2 次迁移，轮时仍比自然排空长。控制器对尾长和后续服务的预测存在误差，可按决策 ID 对照预测与回执。这里比较的是两个完整调度策略，不能把全部差值归因给迁移。v1 同时属于校准集，这张策略比较表与上面的 v2 留出误差使用不同口径。
+In the 7B comparison, cost search completed one migration in v1 and two in v2, yet its rounds took longer than natural draining. Compare predictions and receipts by decision ID to inspect errors in estimated tail length and downstream service time. This comparison measures two complete policies, so migration accounts for only an unknown portion of the difference. Round v1 was also used to fit the model. The policy comparison therefore has different coverage from the held-out v2 prediction errors above.
 
-在已能导入 SimRL 的环境中，从仓库根目录运行，输出使用新路径。
+Run the following commands from the repository root in an environment that can import SimRL. Use new output paths.
 
 ```bash
 trace="${TRACE_DIR:?set TRACE_DIR to the recorded training output}"
@@ -61,50 +61,49 @@ python -m DynaMOPD.run --simulate --rounds 4 \
 python -m DynaMOPD.tools.audit runs/teacher14b-cost-search
 ```
 
+## Activating heterogeneous teachers on a GPU group
 
-## 异构教师重新接卡
+`preload_teacher_imports` allows each physical rank to import SGLang on the CPU ahead of activation. The preparation process reads device properties supplied by the local FSDP rank and waits for controller authorization at the first CUDA operation or scheduler construction. When it starts waiting, it queries the CUDA driver for the current process's primary context count. Once authorized, it builds the teacher scheduler, loads that teacher's weights, and allocates KV. On exit, a supervisor reaps the GPU child and helper processes, then uses NVML on each GPU to verify that host PIDs that appeared during activation have exited. CPU preparation for the next activation overlaps subsequent work on the group.
 
-`preload_teacher_imports` 允许每个物理 rank 在 CPU 上提前导入 SGLang。准备进程读取本地 FSDP rank 提供的设备属性，到首次 CUDA 操作或调度器构造处等待控制器授权。开始等待时通过 CUDA driver 查询本进程的 primary context 数。接卡后才建立教师调度器、装载该教师自己的权重并分配 KV。退出时监督进程回收 GPU 子进程与辅助进程，逐卡用 NVML 检查激活时新出现的宿主机 PID 已经消失。下一次 CPU 准备与该卡组接下来的工作并行。
+For hardware role changes, `unload_s` includes releasing the previous engine after it drains and moving any training state as needed. `teacher_rank_load_s` includes both the remaining CPU preparation wait (`standby_wait_s`) and the GPU engine load. `teacher_rank_timings` breaks out per-rank CPU imports, imports after activation, and initialization. `teacher_kv_capacity` reports the actual capacity allocated by the engine. The worker uses the memory requirement measured at startup to decide whether to keep training state resident. If retaining it reduces KV capacity below the calibrated value, the worker releases the teacher, moves training state off the device, and rebuilds the teacher before accepting scoring requests.
 
-真实换岗的 `unload_s` 包含原角色排空后释放引擎及必要的训练状态搬运。`teacher_rank_load_s` 包含等待 CPU 准备的剩余时间 `standby_wait_s` 及加载 GPU 引擎的时间。`teacher_rank_timings` 提供每个 rank 的 CPU 导入、接卡后导入和初始化计时。`teacher_kv_capacity` 是引擎实际建立的 KV 容量。worker 用启动时测得的显存需求判断能否保留驻留的训练状态。保留训练状态后若引擎 KV 容量低于标定值，先释放教师、迁出训练状态，再重建教师并接受评分。
+When heterogeneous teachers share devices with automatically managed training state, FSDP copies optimizer state and FP32 parameter shards to the host after rollout weight publication is acknowledged. A matching-version CPU copy can be reused on the next offload. `reused_host_optimizer_bytes` and `reused_host_parameter_bytes` record the bytes actually reused. These optimizations require extra host memory and can be controlled separately with `mirror_optimizer_on_rollout` and `mirror_parameters_on_rollout`. Initial allocation, transfers, and subsequent activation all count toward job wall time.
 
-异构教师配合自动训练状态驻留时，FSDP 在 rollout 权重发布回执后将优化器状态和 FP32 参数分片复制到主机。版本相同的 CPU 副本可直接用于后续迁出，`reused_host_optimizer_bytes` 和 `reused_host_parameter_bytes` 分别统计实际复用量。这两项优化占用额外的主机内存，可通过 `mirror_optimizer_on_rollout` 和 `mirror_parameters_on_rollout` 分别控制。首次分配 CPU 副本、实际传输和下一次激活都计入作业墙钟。
+The calibration tool separates preparation wait from GPU load time in traces that provide both. When a teacher releases its group, the simulator starts the next CPU preparation on that group, so the next activation waits only for outstanding preparation. The planner evaluates candidate schedules using the group's measured teacher activation time and estimates offload time from the previous role, training-state residency, and optimizer location. [Teacher executor](../backends/teacher_pool.py) · [Simulator](../backends/simulation.py) · [Calibration tool](../tools/worker_costs.py)
 
-校准工具从新 trace 分离准备等待与 GPU 加载时间。模拟器在教师释放时启动同卡组的下一次 CPU 准备，后续激活只等待剩余时间。搜索在备选调度序列中使用该组的实际教师激活耗时，并按原角色、训练状态驻留及优化器位置估计迁出时间。[执行器](../backends/teacher_pool.py) · [模拟器](../backends/simulation.py) · [校准工具](../tools/worker_costs.py)
+### Validate prediction errors by operation
 
-### 校验每种操作的预测误差
-
-可以用独立训练运行校验同一份 worker 成本模型。两个 trace 需要有相同的模型、并行宽度和教师加载机制。输出给出每种操作的次数、拟合覆盖数、实测均值与平均绝对误差，单位均为秒。拟合 decode 系数需要安装 `calibration` 依赖。
+Validate a worker cost model against an independent training run with the same models, parallel widths, and teacher loading mechanism. The output includes the count of each operation, the number covered by the fit, its measured mean duration, and mean absolute error. Times are in seconds. Install the `calibration` extra to fit decode coefficients.
 
 ```bash
 python -m DynaMOPD.tools.worker_costs "$FIT_TRACE" --fit 0 1 \
   --validation-trace "$OTHER_TRACE" --holdout 0 1 2 3
 ```
 
-用 `--extra-fit-trace "$LARGE_BATCH_TRACE"` 加入同一引擎布局的其他训练形状。工具逐运行检查轮次完整性，并把跨卡发布回执按原始运行分别聚合。同一个验证运行不能作为额外训练数据。decode 拟合对每个副本的完整 RPC 计费，另用各 KV 窗口最长生成步数之和估计容量压力导致的额外串行时间。配置中已有的五项 `decode` 系数仍可使用，新拟合的六项系数保存在 `decode_rpc`。
+Use `--extra-fit-trace "$LARGE_BATCH_TRACE"` to include other training shapes from the same engine layout. The tool checks round completeness separately for each run and aggregates cross-group publication receipts within the run that produced them. A validation run cannot also supply extra fitting data. Decode fitting charges for each replica's full RPC. The sum of the longest generation step counts in each KV window estimates additional serialization under capacity pressure. Existing five-coefficient `decode` profiles remain supported. New six-coefficient fits are stored in `decode_rpc`.
 
-独立校验执行模型时，可以将另一份拟合结果中的 `sim_worker_profile` 对象写入配置的 `sim_execution_profile`，保留原来的调度器与先验。`sim_preflight_activation_s` 可按卡组编号和教师名称提供实测初始激活时间，该输入在首个 decode 前可见。虚拟 worker 后续用本组已经完成的角色加载刷新回报。
+To validate an execution model independently, copy `sim_worker_profile` from another fit into the configuration's `sim_execution_profile` and keep the original scheduler and its priors. Set `sim_preflight_activation_s` to measured initial activation times by group index and teacher name. This information is available before the first decode. The virtual worker subsequently refreshes its report from completed role loads on its own group.
 
-还可以用 `python -m DynaMOPD.tools.trace_timing "$OTHER_TRACE" --config "$FITTED_CONFIG"` 固定实际动作与回执依赖，分别以真实 KV 命中量和估算命中量重算 decode、评分和训练算时。其余动作、控制器开销和传输时延采用被分析运行的观测值。工具先用原始耗时重建并校验整轮时钟。`compute_coverage` 逐轮给出各类计算操作中实际使用了模型预测和回退到实测值的次数。若固定动作的误差小而自由调度回放的误差大，应对照卡组完成顺序和之后的动作选择。
+Use `python -m DynaMOPD.tools.trace_timing "$OTHER_TRACE" --config "$FITTED_CONFIG"` to hold observed actions and receipt dependencies fixed and recompute decode, scoring, and training times with either measured or estimated KV hits. Other actions, controller overhead, and transfer latency use the analyzed run's observations. The tool first reconstructs the whole round on its original clock and checks the result. For each round and compute operation, `compute_coverage` counts predictions and fallbacks to measured times. If the fixed-action error is small while freely scheduled replay diverges, compare group completion order and the actions selected after each completion.
 
-缺省回放使用确定性的服务时间。拟合结果还保存 decode、各教师 score 和 train 的实测耗时与预测耗时之比的经验分位数。显式设置 `sim_timing_seed` 后，模拟器按卡组和操作使用独立的可复现随机流，为服务时间采样倍率，回执记录 `nominal_service_s` 和 `service_ratio`。可在同一批轨迹上换多个 timing seed，检查先后完成顺序的波动是否改变选中动作。采样倍率不影响轨迹 seed，当前未拟合同节点不同卡组之间的相关抖动。
+Replay uses deterministic service times by default. The fit also stores empirical quantiles of the ratio of observed to predicted time for decode, scoring by teacher, and training. With `sim_timing_seed` set, the simulator uses independent reproducible random streams per group and operation to sample service-time multipliers. Receipts record `nominal_service_s` and `service_ratio`. Replay the same trajectories with several timing seeds to see whether variations in completion order change the chosen actions. Timing multipliers leave trajectory seeds unchanged. The fit does not currently capture correlated jitter across groups on the same node.
 
-decode 以一个 RPC 内最慢的推理副本决定卡组完成时间。模型使用生成步数、活跃请求实际输出总量、累积上下文和未命中的输入 token。训练数据全部为固定步数时，固定开销归入每步耗时，以免将整个 chunk 的开销外推给短尾。显存压力下模拟器按各副本 KV 页数拆分请求，回收非活动前缀，在下次读到相同轨迹时计入重新 prefill。trace 中的 `replica_decode_windows`、`rollout_kv_evicted` 和 `cached_tokens` 可用于核对。页级批次划分是对 SGLang 连续批处理的近似。
+Within a decode RPC, the slowest inference replica determines the group's completion time. The model uses generation steps, total output from active requests, cumulative context, and input tokens that missed the cache. If every training observation used the same number of steps, the fit folds fixed overhead into the per-step time to avoid charging a full chunk to a short tail. Under memory pressure, the simulator splits requests according to each replica's KV pages, reclaims inactive prefixes, and charges for prefill if it encounters the trajectory again. Inspect `replica_decode_windows`, `rollout_kv_evicted`, and `cached_tokens` in the trace. Page-based batching approximates SGLang's continuous batching.
 
-评分成本按教师独立拟合，输入为最慢副本未命中的前缀 token 数。缺少离线系数的路由可以从当次作业已完成的评分学习。慢卡组在加载教师时只持有角色租约，前缀在真正派发评分时才被认领。模拟器和真机执行相同的派发协议。在不使用阶段屏障时，搜索也可比较等前缀到达再加载和利用卡组空档提前加载。完成回执决定新角色何时可用。
+Scoring cost is fitted separately for each teacher, using the number of uncached prefix tokens on the slowest replica. A route with no offline coefficients can learn from completed scoring calls in the current job. While loading a teacher, a slow group holds only a role lease. It claims prefixes when scoring is dispatched. Simulation and hardware follow the same dispatch protocol. With phase barriers disabled, search can compare waiting for prefixes before loading with loading early during an idle interval. The completion receipt determines when the new role is available.
 
-八张 H20 的 TP1 配置启用 `length_forecast=conditional_quantiles`，并把延后重建 KV 加入可选动作。每轮从已完整结束的历史轮次提取各路由的长度分布，对超过当前前缀长度的历史观测取条件分位数，估算同一副本内请求结束的先后。单条尾部请求沿用配置的最大长度 EMA。历史分布会随进程重启重新积累。配置省略该字段时沿用逐条条件中位数 `conditional_median`。两者给搜索提供时间估计，合并和扩容仍由备选布局的预计完轮时间决定。[八卡配置](../configs/sglang-tp1-fsdp2-8xh20.json)
+The eight-H20 TP1 recipe enables `length_forecast=conditional_quantiles` and includes deferred KV reconstruction as a candidate action. Each round draws a per-route length distribution from completed historical rounds. Conditional quantiles of observations that exceeded the current prefix length estimate the order in which requests on the same replica will finish. For a single tail request, the scheduler uses the configured EMA of maximum response length. The process rebuilds its historical distribution after a restart. Omitting the field selects per-request `conditional_median`. Both estimators supply timing predictions. The planner selects merges and expansions by the predicted round completion times of candidate layouts. [Eight-GPU configuration](../configs/sglang-tp1-fsdp2-8xh20.json)
 
-`schedule_search.planner_wall_s` 记录规划器消耗的实际 CPU 秒。离线模拟的 GPU 时间使用虚拟时钟。在比较预计剩余时间与实测余时，或将虚拟回放用于吞吐估计时，需要另外核对控制器、通信和文件导出的墙钟开销。
+`schedule_search.planner_wall_s` records actual CPU seconds spent planning. Offline simulation uses a virtual clock for GPU time. When comparing predicted and measured remaining time, or estimating throughput from virtual replay, also check wall time spent on the controller, communication, and file export.
 
-未来前缀的首个可用时间取自当前 decode 批次的下一次回执。搜索比较立即分段评分和等到终止再组批，并在预测队列中维持每条轨迹的 offset 依赖。预计在同一教师副本接续评分时，只有该前缀仍在预计的 KV 容量内才抵扣 prefill 时间。估算迁移显存和待重建 token 时，使用两端在途 decode 批次到达安全点后的进度。
+The earliest availability of a future prefix comes from the next receipt of the current decode batch. The search compares scoring segments immediately with waiting for termination to build a batch, preserving each trajectory's offset dependencies in the predicted queue. For consecutive scores on the same teacher replica, it deducts prefill time only when the prefix still fits within predicted KV capacity. Estimates of migration memory and tokens to rebuild use the projected progress of both in-flight decode batches at their safe points.
 
-对 SGLang 作业设置 `deferred_migration_prefill=true` 会加入一种合并候选。目标组检查容量、seed 和采样位置，然后确认接管；源组收到确认后可以切换角色。目标组在下一次 generate 时用完整前缀重建缺失的 KV。立即重建和自然排空仍参与同一决策。真机 trace 中 `transfer=seed_position_then_decode` 表示此交接，`deferred_context_tokens` 为迁移时的上下文量，后续 decode 的 `migration_prefill_contexts` 和 `cached_tokens` 给出各请求的上下文与引擎命中量。decode RPC 的持续时间同时包含重建和生成，二者目前没有单独的 GPU kernel 计时。
+Set `deferred_migration_prefill=true` in an SGLang job to include a merge candidate that defers reconstruction. The destination checks capacity, seed, and sampling position and acknowledges ownership. The source can then change roles. On the next generate call, the destination rebuilds missing KV from the full prefix. Immediate reconstruction and natural draining remain candidates in the same decision. In the hardware trace, `transfer=seed_position_then_decode` identifies this handoff, and `deferred_context_tokens` records context volume at migration. The subsequent decode's `migration_prefill_contexts` and `cached_tokens` give per-request context and engine cache hits. Decode RPC time includes reconstruction and generation. The trace has no separate GPU kernel timings for the two.
 
-在 14B 实验中，用前两轮拟合、第三轮留出验证，12 次服务换岗的平均绝对误差为 0.54 秒，按角色对估计为 0.91 秒。四组发布动作的误差为 0.40 秒。两次模型拟合与训练作业分开运行。
+In the 14B experiment, fitting on the first two rounds and holding out the third gave a mean absolute error of 0.54 seconds across 12 role changes. The role-pair estimate gave 0.91 seconds. Error for the four groups' publication actions was 0.40 seconds. The two model fits ran separately from the training job.
 
-### 复查生成空档和 TP 扩容
+### Inspect decode gaps and TP expansion
 
-在 `--policy cost_search --simulate --replay` 的回放命令上加入 `--rollout-tp-profile <成本文件>`（或在配置中指定 `rollout_tp_expansion`），调度器才有可用的宽 TP 布局。成本应匹配学生模型、设备和引擎。比较扩容收益时，两次使用相同的成本文件、预留显存和回放输入，在对照组配置中设置 `policy_options.allow_tp_expansion=false`。该选项仅关闭扩容候选。
+Add `--rollout-tp-profile <profile>` to a `--policy cost_search --simulate --replay` command, or set `rollout_tp_expansion` in the configuration, to make a wide-TP layout available. Match the profile to the student model, devices, and engine. To compare expansion on and off, use the same profile, reserved memory, and replay inputs in both runs. Set `policy_options.allow_tp_expansion=false` in the control run to disable only the expansion candidate.
 
-搜索检查同一宽 TP 网格中主组和借出组的请求所有权、显存及在途操作。其他卡组可以继续生成。在 `schedule_search` 事件中，`tp_eligibility` 记录候选的可行性，`early_decode_groups` 给出搜索期间已派发的独立卡组。实际交接起止以 `tp_expand` 的 dispatch 和 complete 为准。评估生成气泡时应同时查看卡组间的 decode 空档和单个 RPC 内各副本的工作量。后者即使在卡组持续生成时也可能不均衡。
+For each wide-TP mesh, the planner checks request ownership, memory, and in-flight operations on the primary and lending groups. Other groups can continue generating. In `schedule_search` events, `tp_eligibility` reports candidate eligibility and `early_decode_groups` lists independent groups dispatched during the search. Use the `tp_expand` dispatch and completion to identify the actual handoff interval. When investigating decode gaps, inspect both idle intervals across groups and the per-replica work inside each RPC. Replicas can have uneven workloads even while their group generates continuously.

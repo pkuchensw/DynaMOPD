@@ -1,17 +1,17 @@
 <!doctype html>
-<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GPU 运行时间线 · DynaMOPD</title>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GPU timeline · DynaMOPD</title>
 <style>
 :root{color-scheme:light;--ink:#192f38;--muted:#526974;--line:#cfdddf;--paper:#fcfdfb}*{box-sizing:border-box}body{margin:0;background:#eef3f2;color:var(--ink);font:15px/1.6 "IBM Plex Sans",system-ui,sans-serif}main{max-width:1480px;margin:auto;padding:32px clamp(12px,4vw,64px) 48px}h1{margin:0;font-size:clamp(25px,4vw,40px)}h2{font-size:18px;margin:18px 0 8px}#meta,p{margin:4px 0 15px;color:var(--muted)}section{margin:18px 0;background:var(--paper);padding:16px;border:1px solid var(--line);border-radius:7px}.controls,#legend{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px}select,button{font:inherit;color:inherit;border:1px solid #aebfc3;border-radius:4px;background:white;padding:4px 7px}label{white-space:nowrap}label input{vertical-align:middle}#legend{margin:14px 0;font-size:13px;gap:4px 14px}.dot{display:inline-block;margin-right:5px;width:11px;height:11px;border-radius:2px}.lane{display:grid;grid-template-columns:clamp(100px,15vw,205px) minmax(100px,1fr);align-items:center;border-bottom:1px solid #dfebea;gap:8px}.device{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:13px/1.55 ui-monospace,monospace}.device small{display:block;color:var(--muted)}canvas{width:100%;height:46px;display:block}.axis canvas{height:25px}.axis{position:sticky;top:0;background:var(--paper);z-index:1}#tip{position:fixed;pointer-events:none;max-width:min(360px,95vw);background:#102c35;color:white;border-radius:5px;padding:7px 10px;font-size:13px;white-space:pre-line;z-index:2}.grouptitle{font-weight:650;margin:12px 0 2px}.muted{font-size:13px;color:var(--muted)}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,th{text-align:right;padding:5px 10px;border-bottom:1px solid var(--line)}th:first-child,td:first-child{text-align:left}.scroll{overflow:auto}[hidden]{display:none!important}
 </style>
-<main><h1>GPU 运行时间线</h1><p id="meta"></p>
-<section><div class="controls"><label>轮次 <select id="round"><option value="-1">全部</option></select></label><label>节点 <select id="node"><option value="">全部</option></select></label><label>缩放 <select id="zoom"><option>1</option><option>2</option><option>4</option><option>8</option><option>16</option></select> ×</label><label>时间位置 <input type="range" id="pan" min="0" max="100" value="0" aria-label="移动时间窗口"></label><label id="autoBox" hidden><input type="checkbox" id="auto" checked> 每 10 秒刷新</label><button id="refresh" hidden>刷新</button></div>
+<main><h1>GPU timeline</h1><p id="meta"></p>
+<section><div class="controls"><label>Round <select id="round"><option value="-1">All</option></select></label><label>Node <select id="node"><option value="">All</option></select></label><label>Zoom <select id="zoom"><option>1</option><option>2</option><option>4</option><option>8</option><option>16</option></select> ×</label><label>Time window <input type="range" id="pan" min="0" max="100" value="0" aria-label="Pan the time window"></label><label id="autoBox" hidden><input type="checkbox" id="auto" checked> Refresh every 10 seconds</label><button id="refresh" hidden>Refresh</button></div>
 <div id="legend"></div><p class="muted" id="help"></p><div id="lanes"></div></section>
-<section id="summary" hidden><h2>每轮提交</h2><div class="scroll"><table><thead><tr><th>新版本</th><th>训练 token</th><th>轮耗时 (s)</th><th>有效 token/s</th><th>平均损失</th></tr></thead><tbody id="metrics"></tbody></table></div></section><p id="warnings"></p></main><div id="tip" hidden></div>
+<section id="summary" hidden><h2>Round commits</h2><div class="scroll"><table><thead><tr><th>New version</th><th>Training tokens</th><th>Round time (s)</th><th>Effective tokens/s</th><th>Mean loss per token</th></tr></thead><tbody id="metrics"></tbody></table></div></section><p id="warnings"></p></main><div id="tip" hidden></div>
 <script type="application/json" id="payload">__DATA__</script><script>
 "use strict";
 let data=JSON.parse(document.getElementById("payload").textContent),nodes=[];const live=__LIVE__;
 const el=id=>document.getElementById(id);
-const palette={decode:["student 生成","#147f94"],score:["teacher 评分","#27865f"],train:["训练前反向","#8158b0"],reduce_grads:["梯度归约","#614698"],commit:["更新 / 保存","#a84971"],publish:["权重发布 / 切回","#354888"],switch:["角色切换","#c68732"],move:["请求迁移","#a95432"],tp_expand:["TP 扩容","#9c691b"],tp_shrink:["TP 归还","#846338"],empty:["副本无请求","#c7d3d6"],pending:["在途·未确认","#ad9b8c"]};
+const palette={decode:["Student generation","#147f94"],score:["Teacher scoring","#27865f"],train:["Forward and backward passes","#8158b0"],reduce_grads:["Gradient reduction","#614698"],commit:["Update and checkpoint","#a84971"],publish:["Publish weights and switch back","#354888"],switch:["Role switch","#c68732"],move:["Request migration","#a95432"],tp_expand:["TP expansion","#9c691b"],tp_shrink:["TP release","#846338"],empty:["Idle replica","#c7d3d6"],pending:["Awaiting completion","#ad9b8c"]};
 const $add=(parent,tag,text,cls)=>{const e=document.createElement(tag);if(cls)e.className=cls;e.textContent=text;parent.append(e);return e};
 function controls(){
 const round=el("round").value,node=el("node").value;
@@ -25,8 +25,8 @@ el("round").value=round;el("node").value=node;
 const types=new Set(data.rows.flatMap(g=>Array.from(new Set(g.spans.map(s=>s[2])))));
 for(const [k,[label,color]] of Object.entries(palette)){if(!types.has(k))continue;const span=$add(el("legend"),"span",label);const d=document.createElement("i");d.className="dot";d.style.background=color;span.prepend(d)}
 const measured=data.rows.some(g=>g.samples.some(s=>s[1]!==null));
-el("help").textContent=(data.simulated?"SimRL 虚拟时间。":"色块来自卡组执行回执，包含 RPC、同步和引擎等待。")+
-" 空白表示没有已记录动作。"+(measured?"下方折线为 NVML 设备利用率（0–100%）。悬停查看动作、显存和采样时间。":"本次没有可用的 NVML 利用率读数。");
+el("help").textContent=(data.simulated?"Times are on the SimRL virtual clock.":"Bars show operations reported by each GPU group, including time spent on RPCs, synchronization and engine waits.")+
+" Gaps indicate that no operation was recorded."+(measured?" The line below each bar shows device utilization from NVML (0–100%). Hover to see the operation, GPU memory usage and sample time.":" No NVML utilization samples are available for this run.");
 el("warnings").textContent=data.warnings.join(" · ");
 for(const m of data.metrics){el("summary").hidden=false;const tr=$add(el("metrics"),"tr","");for(const v of [m.step,m.tokens,m.round_s?.toFixed(2),m.effective_tokens_per_s?.toFixed(1),m.loss_per_token?.toPrecision(4)])$add(tr,"td",v??"—")}
 }
@@ -34,15 +34,15 @@ el("autoBox").hidden=el("refresh").hidden=!live;
 let fetching=false;
 async function refresh(){if(fetching)return;fetching=true;
 try{const resp=await fetch("/data.json",{cache:"no-store"});if(!resp.ok)throw Error(resp.status);
-data=await resp.json();controls();show();}catch(err){el("warnings").textContent="刷新失败 · "+err.message}finally{fetching=false}}
-if(live){el("refresh").onclick=refresh;setInterval(()=>{if(el("auto").checked&&!document.hidden&&data.status!=="已结束"&&data.status!=="运行失败")refresh()},10000)}
+data=await resp.json();controls();show();}catch(err){el("warnings").textContent="Refresh failed · "+err.message}finally{fetching=false}}
+if(live){el("refresh").onclick=refresh;setInterval(()=>{if(el("auto").checked&&!document.hidden&&data.status!=="Finished"&&data.status!=="Failed")refresh()},10000)}
 function canvas(parent,height,draw){const c=$add(parent,"canvas","");const w=Math.max(1,c.clientWidth),ratio=window.devicePixelRatio||1;c.width=Math.round(w*ratio);c.height=Math.round(height*ratio);const ctx=c.getContext("2d");ctx.scale(ratio,ratio);draw(ctx,w);return c}
 function lower(arr,t){let i=0,j=arr.length;while(i<j){const m=(i+j)>>1;if(arr[m][0]<t)i=m+1;else j=m}return i}
 function show(){const root=el("lanes");root.replaceChildren();el("tip").hidden=true;
 const round=data.rounds[+el("round").value];const starts=data.rows.flatMap(g=>[g.spans[0]?.[0],g.samples[0]?.[0]]).filter(Number.isFinite);
 const left=round?.start??(starts.length?Math.min(...starts):0),end=round?.end??data.end,range=Math.max(.001,end-left),width=range/(+el("zoom").value),lo=left+(range-width)*(+el("pan").value/100),hi=lo+width;
 el("pan").disabled=+el("zoom").value===1;
-const axis=$add(root,"div","","lane axis");$add(axis,"small","执行器时间 (s)","muted");
+const axis=$add(root,"div","","lane axis");$add(axis,"small","Executor time (s)","muted");
 canvas(axis,25,(ctx,w)=>{ctx.fillStyle="#506670";ctx.font="11px monospace";for(let i=0;i<=4;i++){ctx.textAlign=i===0?"left":i===4?"right":"center";ctx.fillText((lo+width*i/4).toFixed(2),w*i/4,17)}});
 for(const n of nodes){if(el("node").value && el("node").value!==n)continue;$add(root,"div",n,"grouptitle");
 for(const g of data.rows.filter(g=>g.node===n)){const lane=$add(root,"div","","lane");const label=$add(lane,"div","GPU "+g.device,"device");label.title=n+" / "+g.device;$add(label,"small","group "+g.group);
@@ -52,9 +52,9 @@ ctx.strokeStyle="#263c45";ctx.lineWidth=1;ctx.beginPath();let last=null;
 for(let i=Math.max(0,lower(g.samples,lo)-1);i<g.samples.length;i++){const [t,u]=g.samples[i];if(u===null){last=null;continue}const y=43-u*.17;if(last===null||t-last>2.5*g.interval){ctx.moveTo(x(t),y);ctx.lineTo(x(t)+.5,y)}else ctx.lineTo(x(t),y);last=t;if(t>hi)break}ctx.stroke()});
 c.onpointermove=e=>{const rect=c.getBoundingClientRect(),t=lo+(e.clientX-rect.left)*width/rect.width,i=lower(g.spans,t+1e-9)-1,span=g.spans[i],j=lower(g.samples,t);
 const sample=[g.samples[j-1],g.samples[j]].filter(Boolean).sort((a,b)=>Math.abs(a[0]-t)-Math.abs(b[0]-t))[0];const text=[n+" · GPU "+g.device+" · "+t.toFixed(3)+" s"];
-if(span&&span[1]>t){text.push((palette[span[2]]?.[0]??span[2])+" · "+span[3],span[0].toFixed(3)+"–"+span[1].toFixed(3)+" s")}else text.push("没有已记录动作");
-if(sample && Math.abs(sample[0]-t)<=g.interval*1.5){text.push("NVML @ "+sample[0].toFixed(2)+" s · "+(sample[1]??"—")+"% · "+(sample[2]??"—")+" GiB");if(g.clock_error_s)text.push("跨节点对时估计 ±"+(1000*g.clock_error_s).toFixed(1)+" ms")}
+if(span&&span[1]>t){text.push((palette[span[2]]?.[0]??span[2])+" · "+span[3],span[0].toFixed(3)+"–"+span[1].toFixed(3)+" s")}else text.push("No recorded operation");
+if(sample && Math.abs(sample[0]-t)<=g.interval*1.5){text.push("NVML @ "+sample[0].toFixed(2)+" s · "+(sample[1]??"—")+"% · "+(sample[2]??"—")+" GiB");if(g.clock_error_s)text.push("Estimated clock alignment error ±"+(1000*g.clock_error_s).toFixed(1)+" ms")}
 const box=el("tip");box.textContent=text.join("\n");box.hidden=false;box.style.left=Math.max(0,Math.min(innerWidth-box.offsetWidth-6,e.clientX+12))+"px";box.style.top=Math.max(0,Math.min(innerHeight-box.offsetHeight-6,e.clientY+12))+"px"};c.onpointerleave=()=>el("tip").hidden=true;
-}}if(!nodes.length)$add(root,"p","等待执行器报告 GPU 放置。")}
+}}if(!nodes.length)$add(root,"p","Waiting for the executor to report GPU placements.")}
 for(const id of ["node","round","zoom","pan"])el(id).oninput=show;window.addEventListener("resize",show);controls();show();
 </script></html>

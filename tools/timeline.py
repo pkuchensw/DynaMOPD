@@ -21,7 +21,7 @@ def records(path):
 
 def report(folder):
     groups, rows, rounds, pending, warnings = {}, [], [], {}, []
-    config, backend, status = {}, "", "运行中或尚无结束回执"
+    config, backend, status = {}, "", "Awaiting run completion"
     last = 0.
     simulated = False
 
@@ -48,9 +48,9 @@ def report(folder):
         elif event == "round_end" and rounds:
             rounds[-1]["end"] = e["t"]
         elif event == "run_failed":
-            status = "运行失败"
+            status = "Failed"
         elif event == "run_finished":
-            status = "已结束"
+            status = "Finished"
         elif event == "dispatch":
             pending[e["gpu"]] = (e["t"], e.get("load_version"), e["op"], e.get("peer"))
         elif event == "complete" and groups:
@@ -85,11 +85,11 @@ def report(folder):
                         add(ids[lane*width:(lane+1)*width], a, b,
                             op if count else "empty", f"{detail} · replica {lane} · {count} req")
                 else:
-                    add(ids, a, b, op, detail+" · 卡组回执")
+                    add(ids, a, b, op, detail+" · GPU group receipt")
             else:
                 add(primary + other, a, b, op, detail)
-    if status.startswith("运行中") and rounds and all(r["end"] is not None for r in rounds) and len(rounds) == config.get("rounds"):
-        status = "所有轮次已提交"
+    if status == "Awaiting run completion" and rounds and all(r["end"] is not None for r in rounds) and len(rounds) == config.get("rounds"):
+        status = "All rounds committed"
     # NVML IDs can repeat on different nodes. Each allocation writes its own file.
     by_device = {(r["node"], r["device"]): r for r in rows}
     for file in sorted((folder / "gpu-telemetry").glob("*.jsonl")):
@@ -111,7 +111,7 @@ def report(folder):
                     row["samples"].append([round(rec["t"], 4), util,
                                            None if memory is None else round(memory / 2**30, 3)])
     for gpu, (since, _, op, peer) in pending.items():
-        add(groups.get(gpu, []) + groups.get(peer, []), since, last, "pending", op+" · 派发后尚无完成回执")
+        add(groups.get(gpu, []) + groups.get(peer, []), since, last, "pending", op+" · dispatched, awaiting completion")
     for row in rows:
         row["spans"].sort(key=lambda s: s[0])
     metrics = list(records(folder / "metrics.jsonl")) if (folder / "metrics.jsonl").exists() else []
@@ -123,7 +123,7 @@ def render(folder, live=False):
     data = json.dumps(report(folder), ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     # User-selected node names, routes and directory names must remain inert in HTML.
     data = data.replace("&", r"\u0026").replace("<", r"\u003c").replace(">", r"\u003e")
-    return Path(__file__).with_name("timeline.html").read_text().replace("__LIVE__", str(live).lower()).replace("__DATA__", data)
+    return Path(__file__).with_name("timeline.html").read_text(encoding="utf-8").replace("__LIVE__", str(live).lower()).replace("__DATA__", data)
 
 
 def write_timeline(folder, output=None):

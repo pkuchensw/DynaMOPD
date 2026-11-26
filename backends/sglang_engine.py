@@ -14,6 +14,7 @@ import requests
 
 from .score_cache import trim_score_cache
 from ..trainer.data import validate_sampled_ids
+from ..workers.model import fixed_qwen2_theta
 
 
 def sglang_args(cfg, width, name, model, initial_version):
@@ -29,9 +30,6 @@ def sglang_args(cfg, width, name, model, initial_version):
     for key in ("max_prefill_tokens", "chunked_prefill_size"):
         if key in limits:
             args.extend(["--"+key.replace("_", "-"), str(limits[key])])
-    if name == "rollout" and cfg.get("qwen2_dynamic_rope", False):
-        from .qwen2_rope import LOADER
-        args += ["--custom-weight-loader", LOADER]
     if name=="rollout" and cfg.get("cuda_graph", False):
         args += ["--cuda-graph-max-bs", str(limits.get("cuda_graph_max_bs", max(8,cfg["decode_batch"])))]
     else:
@@ -56,6 +54,9 @@ class Server:
         self.rope_theta = self.read_rope(model)
         args = [sys.executable, "-m", launcher, "--host", "127.0.0.1", "--port", str(port),
                 "--enable-memory-saver", *sglang_args(cfg, self.tp_size, name, model, initial_version)]
+        if name == "rollout" and cfg.get("qwen2_dynamic_rope", False) and self.rope_theta is not None:
+            from .qwen2_rope import LOADER
+            args.extend(["--custom-weight-loader", LOADER])
         if cpu_weight_backup:
             args.append("--enable-weights-cpu-backup")
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=physical)
@@ -107,21 +108,17 @@ class Server:
     @staticmethod
     def read_rope(path):
         config = json.loads((Path(path) / "config.json").read_text())
-        if (config.get("architectures") == ["Qwen2ForCausalLM"] and not config.get("rope_scaling")
-                and not config.get("use_sliding_window") and not config.get("use_mrope")
-                and not config.get("dual_chunk_attention_config")):
-            return float(config.get("rope_theta", 10000))
-        return None
+        return fixed_qwen2_theta(config)
 
     def restore_rope(self, path, force=False):
+        theta = self.read_rope(path)
+        if self.rope_theta is None or theta is None or (not force and theta == self.rope_theta):
+            return False
         import torch
         import base64
         import pickle
         from .qwen2_rope import LOADER
 
-        theta = self.read_rope(path)
-        if theta is None or (not force and theta == self.rope_theta):
-            return False
         parameter = [("rope_theta", torch.tensor(theta, dtype=torch.float64))]
         # Transfer the tiny CPU scalar by value. HTTP workers have independent
         # multiprocessing authkeys and cannot redeem a driver-owned CPU storage FD.

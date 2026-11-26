@@ -3,6 +3,7 @@ import errno
 import hashlib
 import json
 from pathlib import Path
+import sys
 import tempfile
 from uuid import uuid4
 
@@ -56,6 +57,30 @@ def stage_models(cfg, pool, folder=None):
     return {path: staged[source] for path, source in sources.items()}
 
 
+def fixed_qwen2_theta(config):
+    """Return the single unscaled RoPE base that the in-place Qwen2 loader can restore."""
+    if (config.get("model_type") != "qwen2" or config.get("architectures") != ["Qwen2ForCausalLM"]
+            or config.get("rope_scaling") or config.get("use_mrope") or config.get("use_sliding_window")
+            or config.get("dual_chunk_attention_config")
+            or any(t != "full_attention" for t in (config.get("layer_types") or []))):
+        return None
+    params = config.get("rope_parameters")
+    if params is None:
+        params = {}
+    # A per-layer map, a scaling factor, or an unknown rotary setting cannot
+    # be represented by the single scalar sent to the SGLang loader.
+    if (not isinstance(params, dict) or params.keys() - {"rope_type", "rope_theta"}
+            or params.get("rope_type", "default") != "default"):
+        return None
+    theta = params.get("rope_theta", config.get("rope_theta", 10000.0))
+    legacy_theta = config.get("rope_theta", theta)
+    if type(legacy_theta) not in (int, float) or legacy_theta != theta:
+        return None
+    if type(theta) not in (int, float) or not 0 < theta <= sys.float_info.max:
+        return None
+    return float(theta)
+
+
 def inference_signature(path, context_limit, dynamic_rope=False):
     """Only alias weights when the active inference model computes the same function."""
     config = json.loads((Path(path) / "config.json").read_text())
@@ -64,11 +89,11 @@ def inference_signature(path, context_limit, dynamic_rope=False):
     # Qwen2 with fixed RoPE and an explicitly capped SGLang context. All
     # requests pass token IDs, and rollout sets its own stop IDs. These fields
     # do not change the prefill logits within the configured range.
-    if (config.get("model_type") == "qwen2" and not config.get("rope_scaling")
-            and not config.get("use_sliding_window") and not config.get("use_mrope")
-            and config.get("max_position_embeddings", 0) >= context_limit):
-        if dynamic_rope and config.get("architectures") == ["Qwen2ForCausalLM"] and not config.get("dual_chunk_attention_config"):
-            config.pop("rope_theta", None)
-        for key in ("max_position_embeddings", "sliding_window", "use_mrope", "eos_token_id"):
+    theta = fixed_qwen2_theta(config)
+    if theta is not None and config.get("max_position_embeddings", 0) >= context_limit:
+        for key in ("max_position_embeddings", "sliding_window", "use_mrope", "eos_token_id",
+                    "rope_parameters", "rope_scaling", "rope_theta"):
             config.pop(key, None)
+        if not dynamic_rope:
+            config["rope_theta"] = theta
     return json.dumps(config, sort_keys=True)

@@ -1,15 +1,10 @@
-"""Full-distribution student-to-teacher KL on fixed prefixes of held-out DAPO answers."""
+"""Full-distribution student-to-teacher KL on fixed prefixes of held-out answers."""
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import json
-import os
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
 
-from DynaMOPD.cluster.topology import visible_devices
-from DynaMOPD.tools.quality import model_paths
+from DynaMOPD.tools.quality import job_config, model_paths, run_workers
 
 
 def validate_vocabularies(reference, paths, rows):
@@ -36,24 +31,29 @@ def extract(path, rows, output):
             n = len(r["response"])
             offsets = sorted({0,n//3,2*n//3,n-1})
             context = r["prompt"] + r["response"][:-1]
-            positions = torch.tensor([len(r["prompt"])-1+p for p in offsets],device="cuda")
-            ids = torch.tensor([context],device="cuda")
+            positions = torch.tensor([len(r["prompt"])-1+p for p in offsets],device=model.device)
+            ids = torch.tensor([context],device=model.device)
             logits = model(input_ids=ids,logits_to_keep=positions,use_cache=False).logits[0]
             distributions[r["i"]] = logits.float().log_softmax(-1).cpu()
     torch.save(distributions,output)
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--out",type=Path,required=True)
-    p.add_argument("--state-dir",type=Path,required=True)
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--out", type=Path, required=True, help="training job directory containing heldout-prefixes.jsonl")
+    p.add_argument("--state-dir", type=Path, help="override the job's checkpoint state directory")
     p.add_argument("--student", action="append", nargs=2, metavar=("NAME","CHECKPOINT"),
                    help="evaluate this named checkpoint on the same fixed prefixes; repeat for paired runs")
-    p.add_argument("--extract")
-    p.add_argument("--scratch",type=Path)
+    p.add_argument("--extract", help=argparse.SUPPRESS)
+    p.add_argument("--scratch", type=Path, help=argparse.SUPPRESS)
     args=p.parse_args()
-    cfg=json.loads((args.out/"config.json").read_text())
-    rows=[json.loads(s) for s in (args.out/"heldout-prefixes.jsonl").read_text().splitlines()]
+    cfg = job_config(args.out)
+    prefixes = args.out / "heldout-prefixes.jsonl"
+    if not prefixes.is_file():
+        p.error(f"missing {prefixes}; run DynaMOPD.tools.quality on the held-out dataset first")
+    rows = [json.loads(s) for s in prefixes.read_text(encoding="utf-8").splitlines() if s.strip()]
+    if not rows:
+        p.error("fixed-prefix evaluation needs at least one held-out answer")
     overrides = args.student or []
     if overrides:
         students = {"initial": cfg["student"]}
@@ -62,13 +62,15 @@ def main():
                 p.error("--student requires a unique identifier for each checkpoint")
             students[name] = checkpoint
     else:
-        students = model_paths(args.state_dir,cfg)
+        students = model_paths(args.out, args.state_dir, cfg)
     # Reuse distributions when a frozen teacher is identical to the initial student.
     paths = {k:Path(v).resolve() for k,v in students.items()}
     teacher_keys = {}
-    for route,teacher in cfg["teachers"].items():
-        path=Path(teacher).resolve()
-        key=next((k for k,v in paths.items() if v==path),f"teacher-{route}")
+    for route in dict.fromkeys(row["teacher"] for row in rows):
+        if route not in cfg["teachers"]:
+            p.error(f"unknown teacher {route} in held-out prefixes")
+        path=Path(cfg["teachers"][route]).resolve()
+        key=next((k for k,v in paths.items() if v==path),f"teacher-{len(teacher_keys)}")
         paths[key]=path
         teacher_keys[route]=key
     if args.extract:
@@ -77,22 +79,14 @@ def main():
         extract(paths[key],selected,args.scratch/f"{key}.pt")
         return
     validate_vocabularies(cfg["student"], paths.values(), rows)
-    devices = visible_devices()
-    if not devices:
-        raise ValueError("prefix evaluation needs a visible GPU")
-    def lane(job):
-        index,group = job
-        for key in group:
-            env=dict(os.environ,CUDA_VISIBLE_DEVICES=devices[index],TOKENIZERS_PARALLELISM="false",
-                     HF_HUB_OFFLINE="1",OMP_NUM_THREADS="2")
-            subprocess.run([sys.executable,"-m","DynaMOPD.tools.prefix_quality","--out",str(args.out),
-                "--state-dir",str(args.state_dir),"--extract",key,"--scratch",scratch,
-                *(arg for record in overrides for arg in ("--student",*record))],env=env,check=True)
-    with tempfile.TemporaryDirectory(dir=args.state_dir) as scratch:
-        keys=list(paths)
-        lanes=[keys[i::len(devices)] for i in range(min(len(keys),len(devices)))]
-        with ThreadPoolExecutor(max_workers=len(lanes)) as pool:
-            list(pool.map(lane,enumerate(lanes)))
+    shared = ["--out", str(args.out)]
+    if args.state_dir is not None:
+        shared.extend(["--state-dir", str(args.state_dir)])
+    for name, checkpoint in overrides:
+        shared.extend(["--student", name, checkpoint])
+    with tempfile.TemporaryDirectory(dir=args.out) as scratch:
+        keys = list(paths)
+        run_workers("DynaMOPD.tools.prefix_quality", shared, [["--extract", key, "--scratch", scratch] for key in keys])
         import torch
         torch.set_num_threads(4)
         tables={k:torch.load(Path(scratch)/f"{k}.pt",weights_only=True) for k in keys}

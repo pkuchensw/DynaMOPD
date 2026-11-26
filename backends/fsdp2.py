@@ -1,4 +1,4 @@
-"""One persistent FSDP2 shard per physical GPU in a group, with verl wrapping/offload."""
+"""Train and publish one persistent native PyTorch FSDP2 shard per GPU."""
 import datetime
 import json
 from itertools import accumulate
@@ -15,14 +15,12 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import (get_model_state_dict, get_state_dict, set_model_state_dict,
                                                     set_state_dict, StateDictOptions)
 from torch.distributed.device_mesh import init_device_mesh
-from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy
 from transformers import AutoModelForCausalLM
 
 from ..algorithms import TokenBatch, build_algorithm
+from ..algorithms.token_losses import sampled_logprob
 from ..scheduler.batching import training_waves
-from ..utils.fsdp_utils import (
-    apply_fsdp2, load_fsdp2_model_to_gpu, load_fsdp_optimizer, offload_fsdp2_model_to_cpu,
-)
+from .sharding import restore_adam_state, shard_causal_lm
 
 
 class Shard:
@@ -43,12 +41,7 @@ class Shard:
         if cfg.get("activation_checkpointing", True):
             self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant":False})
         self.model.train()
-        policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
-        apply_fsdp2(self.model, dict(mesh=mesh, mp_policy=policy, reshard_after_forward=True), {})
-        for module in self.model.modules():
-            if isinstance(module, FSDPModule):
-                # Every response position contributes once across the mesh.
-                module.set_gradient_divide_factor(1.0)
+        shard_causal_lm(self.model, mesh)
         self.opt = torch.optim.AdamW(self.model.parameters(), lr=cfg["lr"],
                                      weight_decay=cfg.get("weight_decay", 0.), fused=True)
         self.tokens = 0
@@ -121,6 +114,9 @@ class Shard:
                 # exactly as it does for model.cpu(). Buffers still use the native path.
                 def on_cpu(tensor):
                     nonlocal master_bytes
+                    if tensor.device.type == "cpu":
+                        # A tied parameter may already have moved via another module.
+                        return tensor
                     host = self.host_params.get(tensor)
                     if host is None:
                         return tensor.cpu()
@@ -129,7 +125,7 @@ class Shard:
                     return host.detach()
                 self.model._apply(on_cpu)
             else:
-                offload_fsdp2_model_to_cpu(self.model, empty_cache=False)
+                self.model.cpu()
             self.resident = False
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
@@ -139,8 +135,8 @@ class Shard:
     def activate(self, version, optimizer_owner=True):
         reused = self.resident and self.version == version
         if not self.resident:
-            load_fsdp2_model_to_gpu(self.model)
-            load_fsdp_optimizer(self.opt, self.device)
+            self.model.to(self.device)
+            restore_adam_state(self.opt, self.device)
             self.resident = True
         if self.version != version:
             checkpoint = self.path(version) / "training"
@@ -183,10 +179,7 @@ class Shard:
         return [output.logits[i,len(x["prompt"])-1:lengths[i]] for i,x in enumerate(batch)]
 
     def sampled_logp(self, logits, labels):
-        if self.attention == "flash_attention_2":
-            from ..utils.torch_functional import logprobs_from_logits_flash_attn
-            return logprobs_from_logits_flash_attn(logits, labels, inplace_backward=False)
-        return logits.float().log_softmax(-1).gather(1, labels[:, None]).flatten()
+        return sampled_logprob(logits, labels, fused=self.attention == "flash_attention_2")
 
     def train(self, items):
         results = []

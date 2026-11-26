@@ -1,4 +1,4 @@
-"""Render an offline Chinese design document for the DynaMOPD training system (stdlib only)."""
+"""Render the offline DynaMOPD system design guide (stdlib only)."""
 import argparse
 import ast
 import html
@@ -11,12 +11,12 @@ from urllib.parse import quote
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OPS = {"decode": ("学生生成", "decode"), "score": ("教师评分", "score"),
-       "train": ("微批训练", "train"), "move": ("请求迁移", "handoff"),
-       "switch": ("角色切换", "handoff"), "tp_expand": ("TP 扩容", "handoff"),
-       "tp_shrink": ("TP 缩容", "handoff"), "reduce_grads": ("梯度归约", "commit"),
-       "commit": ("优化器提交", "commit")}
-LABELS = dict(decode="生成", score="评分", train="训练", handoff="交接", commit="归约 / 发布")
+OPS = {"decode": ("Student generation", "decode"), "score": ("Teacher scoring", "score"),
+       "train": ("Microbatch training", "train"), "move": ("Request migration", "handoff"),
+       "switch": ("Role switch", "handoff"), "tp_expand": ("TP expansion", "handoff"),
+       "tp_shrink": ("TP contraction", "handoff"), "reduce_grads": ("Gradient reduction", "commit"),
+       "commit": ("Optimizer step", "commit")}
+LABELS = dict(decode="Decode", score="Score", train="Train", handoff="Handoff", commit="Reduce / publish")
 
 
 def esc(value):
@@ -69,25 +69,25 @@ def example_timeline():
         [("decode", 0, 33), ("handoff", 33, 40), ("score", 40, 82)],
         [("decode", 0, 48), ("handoff", 48, 56), ("train", 56, 74), ("train", 82, 89)],
     ]
-    chart = ['<figure><figcaption>轮内卡组分工与提交边界 <small>机制示意 · 无实测时间比例</small></figcaption>']
+    chart = ['<figure><figcaption>GPU group assignments and the optimizer step <small>Illustration, timings are schematic</small></figcaption>']
     for i, row in enumerate(groups):
         bars = ''.join(f'<span class="bar {k}" style="left:{a}%;width:{b-a}%">{LABELS[k]}</span>' for k,a,b in row)
-        chart.append(f'<div class="lane"><b>卡组 {i}</b><div class="track">{bars}</div></div>')
-    chart.append('<div class="lane"><b>全局</b><div class="track plain"><span class="bar commit" style="left:89%;width:11%">提交</span></div></div></figure>')
+        chart.append(f'<div class="lane"><b>G{i}</b><div class="track">{bars}</div></div>')
+    chart.append('<div class="lane"><b>Global</b><div class="track plain"><span class="bar commit" style="left:89%;width:11%">Commit</span></div></div></figure>')
     return ''.join(chart)
 
 
 def prefix_example():
-    return ('<figure><figcaption>一次学生迁移和教师缓存回收后的轨迹状态'
-            '<small>同一 rid，偏移为已提交的响应 token 数</small></figcaption>'
-            + table(["事件", "学生组", "已生成", "监督已交付", "教师 KV", "可训练"], [
-                ("学生提交 t₀…t₃", "G0", 4, 0, "—", "否"),
-                ("教师返回 [0, 4)", "G0", 4, 4, "G1 至偏移 4", "否"),
-                ("G2 接管并生成 t₄", "G2", 5, 4, "G1 至偏移 4", "否"),
-                ("G1 回收 KV", "G2", 5, 4, "—", "否"),
-                ("G2 提交 t₅（EOS）", "G2", 6, 4, "—", "否"),
-                ("教师补齐 [4, 6)", "G2", 6, 6, "—", "是")])
-            + '<p class="caption">G1 回收缓存后，下一次评分需重读上下文。前四个标签仍然有效。</p></figure>')
+    return ('<figure><figcaption>A trajectory through student migration and teacher cache eviction'
+            '<small>One request ID. Offsets count committed response tokens.</small></figcaption>'
+            + table(["Event", "Student group", "Generated tokens", "Scores delivered", "Teacher KV cache", "Ready to train"], [
+                ("Student commits t₀…t₃", "G0", 4, 0, "—", "No"),
+                ("Teacher returns [0, 4)", "G0", 4, 4, "G1 through offset 4", "No"),
+                ("G2 takes over and generates t₄", "G2", 5, 4, "G1 through offset 4", "No"),
+                ("G1 evicts the KV cache", "G2", 5, 4, "—", "No"),
+                ("G2 commits t₅ (EOS)", "G2", 6, 4, "—", "No"),
+                ("Teacher scores [4, 6)", "G2", 6, 6, "—", "Yes")])
+            + '<p class="caption">After G1 evicts its cache, the next scoring pass rereads the context. The first four labels remain valid.</p></figure>')
 
 
 def motivation_observation(trace):
@@ -115,164 +115,392 @@ def motivation_observation(trace):
             joint_seconds += t - previous
         active[op] += delta
         previous = t
-    clock = {"sglang_fsdp2": "真机回执", "simrl": "模拟时钟"}.get(backend, "执行器回执")
-    return (f'<aside class="observation"><strong>运行观测</strong><p>在 v{version} 的这一轮中，首次评分始于'
-            f' {score:.2f} s，首次微批训练始于 {train:.2f} s，最后一个生成批次在 {last:.2f} s 返回。'
-            f'三类 worker 动作同时在途的墙钟时间合计 {joint_seconds:.2f} s。'
-            f'时间取自同轮{clock}，含批次内等待。<a href="#case-study">本轮卡组时间线 ↗</a></p></aside>')
+    clock = {"sglang_fsdp2": "hardware worker times", "simrl": "the simulation clock"}.get(backend, "executor times")
+    return (f'<aside class="observation"><strong>Observed overlap</strong><p>In round v{version}, scoring started at'
+            f' {score:.2f} s, microbatch training started at {train:.2f} s, and the last generation batch returned at {last:.2f} s. '
+            f'All three operations were in flight together for {joint_seconds:.2f} s. '
+            f'These times use {clock} from this round and include waiting within batches. <a href="#case-study">View the group timeline ↗</a></p></aside>')
 
 
 def design_sections(trace):
     return [
-        section("motivation", "动机与依赖", "整批同步与轨迹级数据依赖",
-            "在同步多教师 on-policy distillation 中，同一批请求的回答长度可以相差很大。如果整个生成池必须等最后一个请求结束才进入评分，短请求所在的卡组已经排空，对应教师却仍在等待。固定教师卡池可以提前评分，但提前划走的卡也会减少开轮时的生成副本。DynaMOPD 让全部卡组从 rollout 开始，随本轮实际进度重新分配资源。",
-            '<h3>评分与反向传播的就绪条件</h3>'
-            '<p><strong>前缀生成与教师评分。</strong> 对冻结的因果教师，已采样 token yᵢ 的监督为 '
-            '<code>log p<sub>T</sub>(yᵢ | x, y<sub>&lt;i</sub>)</code>。后续生成不会改变这个条件分布。'
-            '因此学生一旦提交前缀，路由对应的教师就有了该段评分所需的全部输入。一个教师批次可以包含来自不同轨迹的已提交片段。</p>'
-            '<p><strong>长请求生成与短样本反向。</strong> 一个样本终止且教师监督齐备后，该样本的损失只依赖自己的数据和轮初参数 θᵥ。'
-            '一个空闲训练组即可用 θᵥ 累积梯度，同时其他卡继续生成。轮末汇齐所有有效 token 的梯度、统一归一化并更新，随后发布 θᵥ₊₁。</p>'
+        section("motivation", "Motivation", "Synchronous updates and per-trajectory dependencies",
+            "In synchronous multi-teacher on-policy distillation, response lengths can vary widely within a "
+            "batch. If scoring waits for the last response, groups that finish early sit idle while their "
+            "teachers wait. Reserving a fixed teacher pool allows scoring to start earlier but leaves fewer "
+            "replicas for initial generation. DynaMOPD starts every group on rollout and reassigns groups as "
+            "work finishes.",
+            '<h3>When scoring and backpropagation can start</h3>'
+            '<p><strong>Scoring a prefix.</strong> For a frozen causal teacher, the score for sampled token yᵢ is '
+            '<code>log p<sub>T</sub>(yᵢ | x, y<sub>&lt;i</sub>)</code>. Later tokens cannot change this conditional distribution. '
+            'As soon as the student commits a prefix, the assigned teacher has all inputs for that segment. One '
+            'teacher batch can score segments from several trajectories.</p>'
+            '<p><strong>Training while long requests generate.</strong> Once a sample terminates and all teacher '
+            'scores arrive, its loss depends only on its data and the parameters θᵥ at the start of the round. '
+            'A free group can accumulate gradients using θᵥ while other GPUs generate. At round end, the '
+            'optimizer group collects gradients for all valid tokens, normalizes once, takes one step and '
+            'publishes θᵥ₊₁.</p>'
             + motivation_observation(trace) + example_timeline(),
-            "重叠能缩短轮时的条件是提前执行的工作原本位于关键路径上。若换岗、重新 prefill 或借走生成卡造成的延迟更长，保持当前布局可能更快。因此调度目标取下一次权重发布的完成时刻。",
+            "Overlap shortens a round when it moves work off the critical path. Retaining the layout can finish "
+            "sooner if switching roles, repeating prefill or borrowing generation GPUs adds more time. The "
+            "scheduler therefore optimizes for the completion time of the next weight publication.",
             [("trainer/driver.py","fit","Controller("),("scheduler/controller.py","Controller.run_round","for a in self.policy.plan")]),
-        section("state", "数据与控制", "轨迹状态与资源所有权",
-            "轨迹以 (rid, student_version) 标识。控制器保存采样 token、行为 logprob、教师路由及已交付的标签。学生请求的执行归属 owner、监督交付偏移 len(labels)、各教师执行位置的可复用 KV 偏移 kv[group] 分别更新。这使学生迁移和教师缓存驱逐可以独立发生。",
-            flow([("控制器", "从已结算状态选择动作"), ("卡组租约", "锁定动作所需的一组或两组卡"),
-                  ("执行器", "本地或 Ray worker，或 SimRL 虚拟执行器"), ("回执", "校验版本和偏移，更新状态后释放租约")])
-            + prefix_example() + '<h3>评分边界</h3><p>评分区间 [a, b) 使用 SGLang 的输入 logprob。引擎从 '
-            '<code>len(prompt) + a − 1</code> 读取，首项为前驱 token 和空分数。worker 校验返回的 token ID，'
-            '跳过前驱并交付恰好 b−a 个分数。对于首段，前驱是 prompt 的最后一个 token。</p>',
-            "训练门槛同时检查终止标志、所需监督的完整性和样本认领状态。EOS 总是有效终止，启用 train_on_length 后，达到长度上限的样本也纳入训练。",
+        section("state", "Data and control", "Trajectory state and resource ownership",
+            "Each trajectory has a (rid, student_version) key. The controller stores sampled tokens, behavior "
+            "log probabilities, the teacher route and delivered labels. It tracks the student request owner, the "
+            "number of delivered scores len(labels), and the reusable teacher KV offset kv[group] independently. "
+            "A student can migrate while teacher caches are evicted.",
+            flow([("Controller", "Choose an action from confirmed state"), ("Group lease", "Reserve the one or two groups required"),
+                  ("Executor", "Run local or Ray workers, or advance SimRL"), ("Completion", "Check the version and offsets, update state and release the lease")])
+            + prefix_example() +
+                '<h3>Scoring boundaries</h3><p>For interval [a, b), the worker requests input log probabilities '
+                'from SGLang starting at '
+            '<code>len(prompt) + a − 1</code>. The first item contains the preceding token and an empty score. '
+            'The worker checks the returned token IDs, '
+            'skips the predecessor and delivers exactly b−a scores. For the first segment, the preceding token '
+            'is the last token of the prompt.</p>',
+            "A sample is ready for training once it has terminated, its required scores are complete and no "
+            "worker has claimed it. EOS always qualifies. With train_on_length enabled, reaching the length "
+            "limit also qualifies.",
             [("scheduler/protocol.py","Row.deliver","self.labels.extend"),("scheduler/protocol.py","Row.ready","return"),
              ("backends/sglang_engine.py","Inference.score","starts =")],
             notes=[
-                ("在途评分固定区间", "派发时冻结本次 [start, end) 与目标 token。学生可以继续延长前缀。回执按当时派发的区间校验，下一段从已交付位置续接。若当前路由仍有活跃轨迹，暂时没有待评前缀也可能很快产生新工作。",
+                ("Fixed intervals for in-flight scores",
+                    "Dispatch fixes [start, end) and the target token IDs. The student may keep generating. The "
+                    "controller validates the completion against the dispatched interval and starts the next "
+                    "segment at the delivered offset. An active route with no pending prefix may soon have work.",
                  ("scheduler/controller.py","Controller.materialize","item.update(start=start")),
-                ("用真引擎探测边界", "启动检查向 SGLang 提交长短不同的两条前缀，逐位置比较整段评分、缓存续评和清空缓存后的重算。对 rollout 还用相同 seed 比较连续采样与清缓存后续采的 token。检查覆盖固定探针和数值容差。",
+                ("Boundary checks on the running engine",
+                    "At startup, SGLang scores two prefixes of different lengths. The check compares scores at "
+                    "each position across a full pass, a cached continuation and a recomputation after the cache "
+                    "is cleared. For rollout it also compares tokens sampled continuously and after clearing the "
+                    "cache with the same seed. The check uses fixed probes and numerical tolerances.",
                  ("backends/checks.py","check_server","for batch in (warmed, rebuilt)")),
-                ("按路由核验采样 ID", "输入先检查学生和教师的 token 映射与 EOS。K1 在映射一致时，用学生与该条请求的教师输出层宽度核验 SGLang 已采样的 ID。这样即使另一个教师的输出层更小，这条轨迹的有效 token 也能交付。固定的轨迹 seed 独立于接下来使用的卡。",
+                ("Validating sampled IDs per route",
+                    "Input checks compare student and teacher token mappings and EOS. With matching mappings, K1 "
+                    "validates SGLang token IDs against the output widths of the student and the teacher "
+                    "assigned to that request. A smaller output layer on another teacher cannot invalidate those "
+                    "tokens. The trajectory keeps its sampling seed when it moves GPUs.",
                  ("trainer/data.py","vocabulary","sampled_id_limits")),
             ]),
-        section("model", "成本建模", "事件模拟与在线校准",
-            "原 SimRL 的弹性 rollout 模拟按时间推进每个推理实例，实例排空时释放卡组。DynaMOPD 复用 UnifiedRoofline、ScoringCost 和分页 KV 管理器，并将虚拟执行器接到与真机相同的 Action / 回执接口。对同一动作，真机等待 worker 返回，模拟器将预测完成时刻插入事件队列。",
-            table(["操作","成本模型","并行边界"],[
-                ("学生生成","生成步数、token 总量、注意力上下文、未命中的输入及 KV 分页约束","各推理副本分别估时，批次完成于最慢副本"),
-                ("教师评分","按路由拟合固定开销和输入成本，复用仍在目标副本中的前缀","同一轨迹按偏移交付，跨轨迹可以成批"),
-                ("微批训练","从每个 FSDP rank 的 packed 或 padded 输入宽度估算前反向耗时","取关键 rank，用就绪样本生成微批"),
-                ("角色切换与发布","区分角色方向、状态驻留、教师启停、本地准备与共享传输","发布屏障等待最晚到达的组，同一段共享传输只计一次")])
-            + '<p class="equation"><b>SimRL 单步模型</b><code>T = max(F, W + G·N + Aₚ·P/b + A𝒹·C)</code>'
-            '<i>F 为最低步时，W 为固定项，N 为本步 token 数，P 为 prefill 注意力工作量，C 为 decode 上下文长度之和，b 为模型的块大小参数。</i></p>'
-            '<p>对整批 decode RPC，拟合特征还包括各请求在本段累积的上下文工作量。初始上下文为 c，继续生成 s 步时，该项为 '
-            '<code>s·c + s(s−1)/2</code>。因此，相同的生成 token 数可以对应不同的执行时间。</p>',
-            "SGLang 真机路径在新的资源分配上清空旧时间系数。预建宽 TP 网格时测量唤醒、休眠和宽解码，首个训练轮在服务请求的同时收集批次和转岗回执。后续搜索采用本作业拟合出的成本并持续修正。已知终长可驱动离线回放，在线策略仅访问决策前已公布的进度和历史。规划器的 CPU 墙钟耗时独立记录为 planner_wall_s。",
+        section("model", "Cost model", "Event simulation and online calibration",
+            "The SimRL elastic rollout simulator advances each inference instance in virtual time and releases "
+            "its group when the instance drains. DynaMOPD reuses UnifiedRoofline, ScoringCost and the paged KV "
+            "manager. Its virtual executor implements the same action and completion interface as the hardware "
+            "executor. Hardware workers return when the operation finishes. The simulator inserts the predicted "
+            "completion into its event queue.",
+            table(["Operation","Estimated costs","Parallel execution"],[
+                ("Student generation","Decode steps, total tokens, attention context, uncached input and KV page limits","Estimate each inference replica separately. The slowest replica determines batch completion."),
+                ("Teacher scoring","Fixed overhead and input cost fitted per route, allowing for cached prefixes on the target replica","Deliver segments in offset order within each trajectory. Batch across trajectories."),
+                ("Microbatch training","Forward and backward time from the packed or padded input width on each FSDP rank","Form microbatches from ready samples and use the slowest rank."),
+                ("Role changes and publication","Switch direction, resident state, teacher startup and shutdown, local preparation and shared transfer","The publication barrier waits for every group. Count each shared transfer once.")])
+            + '<p class="equation"><b>SimRL time per step</b><code>T = max(F, W + G·N + Aₚ·P/b + A𝒹·C)</code>'
+            '<i>F is the minimum step time, W the fixed cost, N the tokens in the step, P the prefill attention '
+            'work, C the sum of decode context lengths, and b the block size parameter.</i></p>'
+            '<p>For a batched decode RPC, the fit also accounts for context accumulated by each request in the '
+            'segment. Given an initial context of c tokens and s more steps, its contribution is '
+            '<code>s·c + s(s−1)/2</code>. Generating the same number of tokens can therefore take different amounts of time.</p>',
+            "On a new allocation, SGLang discards old timing coefficients. When building wide TP meshes, it "
+            "measures wake, sleep and wide decode. The first training round serves requests and collects batch "
+            "and role-switch times. Later searches fit and update costs from this job. Offline replay may use "
+            "known final lengths. The online policy uses only previously reported progress and history. The "
+            "trace records the CPU time spent planning separately in planner_wall_s.",
             [("SimRL/srl/simulator/mopd_elastic.py","ElasticMopdSimulator._collect_batch","def advance"),
              ("SimRL/srl/cost/rollout/roofline.py","UnifiedRoofline._raw","return ("),("backends/simulation.py","Simulator.wait","heappop"),
              ("backends/sim_profile.py","decode_features","ticks ="),("scheduler/calibration.py","update_profile","fit_profile(cfg")],
             notes=[
-                ("在首轮训练中测量", "标准 SGLang 策略启动时清除旧作业的时间系数，保留 TP 宽度和可用组对等拓扑约束。首轮照常生成、评分和训练。允许迁移且出现可行组对时，标定策略尝试一次真实交接，首轮未取得回执时，后续轮次遇到可行组对再补测，采到基础费用后停止探测。某类动作缺样本时，模型可用本作业已观测的粗粒度耗时估算。",
+                ("Measurements in the first training round",
+                    "The standard SGLang policies discard timing coefficients from previous jobs and retain "
+                    "topology constraints such as TP width and eligible group pairs. The first round generates, "
+                    "scores and trains normally. If migration is enabled, calibration attempts a real handoff "
+                    "when a pair becomes eligible. If the first round yields no measurement, a later round "
+                    "retries. Probes stop once the base cost is measured. For operations with sparse samples, "
+                    "the model can use coarser timings observed in this job.",
                  ("scheduler/calibration.py","calibration_round","if candidates:")),
-                ("按物理副本计费", "同一个卡组可运行多个窄 TP 副本。模型在各副本内按 KV 页容量切分窗口，计入冷输入和累计上下文，再取最慢副本的完成时刻。若观测中的 decode 段总是跑满 quantum，固定启动成本与逐步成本无法单独辨识，拟合时将这部分归入每步，防止严重高估很短的尾段。",
+                ("Accounting per physical replica",
+                    "A group can host several narrow TP replicas. The model splits each replica's work into "
+                    "windows that fit its KV pages, accounts for cold input and accumulated context, and takes "
+                    "the slowest completion. If all observed decode segments fill their quantum, the fit cannot "
+                    "distinguish startup cost from per-step cost. It attributes that cost to steps to avoid "
+                    "overstating the cost of a short tail.",
                  ("tools/worker_costs.py","fit_decode","inseparable")),
-                ("区分等待和实际传输", "离线发布模型对齐所有参与组到达 collective 的时刻，将各组本地准备与一次共享传输拆开。真机首轮标定路径直接观测全部组通过发布屏障的墙钟时间。异构教师的 CPU 准备若与旧角色卸载重叠，租约模型只把交接后仍需等待的部分计入。",
+                ("Waiting and transfer time",
+                    "The offline publication model aligns arrival times at the collective, accounts for local "
+                    "preparation on each group, and counts one shared transfer. First-round calibration on "
+                    "hardware measures elapsed time until all groups pass the publication barrier. When teacher "
+                    "CPU preparation overlaps unloading the previous role, the lease model charges only the wait "
+                    "that remains after handoff.",
                  ("backends/sim_profile.py","teacher_lease_window","def teacher_lease_window")),
-                ("区分估时误差和决策误差", "离线可为虚拟 worker 单设 sim_execution_profile，保留调度器自己的估计。固定真机动作顺序回放可以检验服务时间与缓存命中估算，自由调度回放还能检验动作选择。设置 sim_timing_seed 可以按组和操作抽取实测时延倍率，轨迹的采样 seed 保持独立。",
+                ("Timing errors and scheduling errors",
+                    "For offline analysis, set sim_execution_profile to model the virtual worker separately from "
+                    "the scheduler's estimates. Replaying the hardware action order tests service times and "
+                    "cache-hit estimates. Letting the scheduler choose actions also tests its decisions. "
+                    "sim_timing_seed samples measured latency multipliers by group and operation, independently "
+                    "of trajectory sampling seeds.",
                  ("tools/trace_timing.py","replay","The recorded order")),
             ]),
-        section("scheduling", "联合调度", "以权重发布时间为目标的动作搜索",
-            "在每个决策点，控制器先结算已返回的批次。cost_search 根据请求归属、可用卡组、在途工作、监督积压、就绪样本和显存，构造一组可行布局。每种布局再比较评分组、评分与训练批量，以及立即服务或等待更多前缀的排程。",
-            table(["候选布局","潜在收益","计入预计余时的代价"],[
-                ("继续生成，等待自然排空","保留当前生成并行度","评分和就绪微批等待卡组释放"),
-                ("教师 A 保持驻留，另一组服务 B 或训练","多个路由或训练批次并行推进","旧工作排空、角色加载、成批等待以及教师 KV 驱逐"),
-                ("合并两个实例上的请求","提前释放源组用于评分或训练","等待两端安全点、目标接纳、前缀重算以及合并后的生成负载"),
-                ("扩大尾部请求的 TP，再归还卡组","降低较长剩余序列的逐步解码时间","宽布局交接、借卡期间推迟的工作和缩容")])
-            + '<p>对每个候选，预测器沿数据依赖和卡组占用时间向前推演，选择预计发布最早的布局。可并行的动作按各自卡组派发。'
-            '各候选都需要、且与争用组无关的 decode 可以先发，以减少 CPU 搜索造成的空档。</p>',
-            "首轮标定采用单独的资源分配策略。长度预测在冷启动时可用回答上限估计一条潜在长尾，后续利用已完成轮的路由分布和当前前缀，最后一条活跃请求还可参考轮最大长度的 EMA。候选数随布局与搜索预算裁剪，预计最优限于本次评估的候选集合。",
+        section("scheduling", "Scheduling", "Choosing actions to minimize time to weight publication",
+            "At each decision, the controller processes completed batches. The cost_search policy builds "
+            "feasible layouts from request ownership, group availability, in-flight work, outstanding scores, "
+            "ready samples and available memory. For each layout it compares scoring groups, scoring and "
+            "training batch sizes, and the choice of serving now or waiting for more prefixes.",
+            table(["Candidate layout","Potential benefit","Costs in the forecast"],[
+                ("Continue generation until groups drain","Keep current generation parallelism","Scoring and ready microbatches wait for a free group"),
+                ("Keep teacher A resident while another group serves B or trains","Advance multiple routes or training batches concurrently","Draining existing work, loading roles, waiting to form batches and evicting teacher KV"),
+                ("Merge requests from two instances","Free the source group earlier for scoring or training",
+                    "Waiting for both safe points, destination admission, prefix recomputation and additional "
+                    "generation load on the destination"),
+                ("Widen TP for a tail request, then return the group","Shorten each remaining decode step on a long sequence","Entering and leaving the wide layout and delaying other work while GPUs are on loan")])
+            +
+                '<p>The predictor advances each layout along its data dependencies and group occupancy '
+                'intervals. The controller chooses the layout with the earliest predicted publication and '
+                'dispatches independent actions to their groups. '
+            'It can dispatch decode work common to all candidates on uncontested groups before the CPU search finishes.</p>',
+            "The calibration round uses its own allocation policy. At cold start, the response cap can stand in "
+            "for a potential long tail. Later forecasts use length history per route and the current prefix. For "
+            "the final active request they can also use an exponential moving average (EMA) of the round "
+            "maximum. The layout and search budget limit the candidates considered.",
             [("scheduler/search.py","CostSearchPolicy.plan","f = Forecast("),("scheduler/search.py","Forecast.project","def project"),
              ("scheduler/search.py","CostSearchPolicy.plan","estimates.append"),("scheduler/controller.py","Controller.submit","overlapping exclusive leases")],
             notes=[
-                ("开轮放置与副本负载", "可选 balanced 放置按路由历史长度和 prompt 成本估计工作量，在同一副本序号内先分较重的请求，保留各组原始槽数。仅当预计最大负载下降时采用新归属。首轮缺成本样本时沿用初始放置。",
+                ("Initial placement and replica load",
+                    "Optional balanced placement estimates work from historical response lengths per route and "
+                    "prompt cost. It assigns heavier requests first among replicas with the same index and "
+                    "preserves each group's original slot count. It adopts the placement only if the predicted "
+                    "peak load decreases. When the first round has no cost samples it uses the initial placement.",
                  ("scheduler/search.py","CostSearchPolicy.place_rollouts","if max(after)")),
-                ("校正先完成样本的短偏差", "轮初冻结已完成轮的长度历史。被旧上限截断的样本，只在旧上限足以覆盖当前上限时才能用于推算该上限下的长度。可选条件分位数对同路由、同进度、同上限的活跃请求分配不同分位，避免把一批请求全预测成中位长度。最后一条活跃请求可用轮最大长度 EMA，前缀超过 EMA 后回退到条件估计。",
+                ("Length bias in early completions",
+                    "Each round starts with a snapshot of lengths from completed rounds. A sample truncated at "
+                    "an earlier cap can inform a forecast at the current cap only if the earlier cap was at "
+                    "least as high. Optional conditional quantiles assign different percentiles to active "
+                    "requests with the same route, progress and cap. For the last request, the forecast can use "
+                    "the EMA of per-round maxima until its prefix exceeds the EMA, then return to the "
+                    "conditional estimate.",
                  ("scheduler/search.py","Forecast.estimate_quantiles","order statistics")),
-                ("用空档推进短 decode", "两端到达迁移安全点的时间可能不同。merge_backfill 用二分搜索找出预计能塞进等待窗口的最长 decode 段，把多生成的 token 及其重算成本放回候选排程，再与直接等待比较。两端已预订时，控制器仍可撤销预约并重新规划。",
+                ("Using migration waits for short decode segments",
+                    "The two endpoints may reach safe points at different times. merge_backfill uses binary "
+                    "search to find the longest decode segment predicted to fit the gap. It adds the extra "
+                    "tokens and their recomputation cost to the forecast and compares the result with waiting. "
+                    "The controller can cancel a paired reservation and replan.",
                  ("scheduler/search.py","Forecast.merge_backfill","while lo < hi")),
-                ("路由顺序、提前加载和认领", "搜索比较按就绪时间、按教师聚集或优先排空某一路由。各轨迹的评分片段始终服从偏移依赖。prepare_teacher 可以先加载角色而不认领前缀。普通 score 触发冷加载时，关闭在线标定允许热副本先取走前缀。开启在线标定会认领该批并排在换岗之后，后续轮次也沿用这个模式。",
+                ("Route order, preloading and claiming work",
+                    "The search compares serving by ready time, grouping by teacher and draining one route "
+                    "first. Scoring segments follow offset order within each trajectory. prepare_teacher can "
+                    "load a role before claiming any prefixes. During a cold score with online calibration "
+                    "disabled, a warm replica can claim the prefixes first. With online calibration enabled, "
+                    "dispatch claims the batch and queues it behind the switch. Later rounds retain this "
+                    "behavior.",
                  ("scheduler/controller.py","Controller.assign","Acquire only the engine lease")),
-                ("多卡共享就绪队列", "实测成本路径会把按可用组数拆小的评分批次和训练微批也纳入比较。派发每个微批后立即认领对应样本，后续组从剩余队列取数。若仍需生成或评分，控制器为这些工作保留服务能力。候选较多时先下发各布局共有的 decode，再枚举争用组的动作。",
+                ("Sharing a ready queue across groups",
+                    "With measured costs, the search also considers smaller scoring and training batches sized "
+                    "for the available groups. Each dispatched training microbatch claims its samples "
+                    "immediately. Other groups take what remains. The controller reserves capacity for "
+                    "outstanding generation and scoring. When many layouts are feasible, it dispatches their "
+                    "common decode work before enumerating actions on contested groups.",
                  ("scheduler/calibration.py","share_ready","share = min")),
-                ("提前释放空闲教师", "使用分项发布成本的搜索路径会比较两种选择：教师保持驻留直到发布，或者先退到 standby，把退出进程的时间藏在其他组的工作期间。在线标定路径直接使用实测整轮发布屏障耗时，当前这个分支没有单独搜索提前退租的收益。",
+                ("Releasing idle teachers early",
+                    "When publication costs are broken down by phase, the search can keep a teacher resident "
+                    "until publication or switch it to standby while other groups work, hiding process shutdown. "
+                    "The online calibration path uses the measured duration of the publication barrier and does "
+                    "not estimate the savings from an early release separately.",
                  ("scheduler/search.py","Forecast.project","with_standby =")),
             ]),
-        section("roles", "角色与加载", "卡组交接与异构教师加载",
-            "switch 占用卡组的独占租约。worker 在安全点确认学生请求已结束或迁出，再处置旧缓存、核对显存并加载目标角色。控制器收到匹配的完成回执后更新组角色。这允许提前规划下一批任务，同时维持引擎级的互斥。",
-            table(["条件","执行路径"],[
-                ("推理布局兼容","复用同一推理引擎。启用冻结教师分桶同步时，经本地 CUDA IPC 装入该教师自己的权重。"),
-                ("异构教师需要独立 rank","在 CPU 准备启动环境，GPU 租约交接后启动活动 rank。释放角色时退出活动进程，可选的 teacher image 减少重复初始化。"),
-                ("训练状态占用显存","按新角色的显存需求决定 trainer 是否驻留，必要时将状态迁回主机。有待归约梯度时限制释放。")]),
-            "切换成本可拆为旧角色释放、新角色准备、等待和加载。组级回执覆盖这些步骤的墙钟区间，其中可以包含同步等待。加载完成和显存检查通过后，该组才接收对应的评分或训练批次。",
+        section("roles", "Role changes", "GPU handoffs and loading heterogeneous teachers",
+            "A switch holds an exclusive group lease. At a safe point, the worker confirms that student requests "
+            "have finished or migrated, disposes of old caches, checks available memory and loads the next role. "
+            "The controller updates the group's role when it receives the matching completion. It can plan the "
+            "next batch while the engine remains exclusive to the current operation.",
+            table(["Condition","Execution path"],[
+                ("Compatible inference layouts",
+                    "Reuse the engine. With bucketed frozen-teacher synchronization enabled, load that teacher's "
+                    "weights through local CUDA IPC."),
+                ("Heterogeneous teacher with dedicated ranks",
+                    "Prepare the runtime on the CPU and start active ranks after the GPU handoff. Active "
+                    "processes exit when the teacher releases the GPUs. Optional teacher images reduce repeated "
+                    "initialization."),
+                ("Training state occupies device memory",
+                    "Keep the trainer resident if the new role fits. Otherwise move state to the host. "
+                    "Outstanding gradients constrain when the trainer can release its memory.")]),
+            "Switch time includes releasing the previous role, preparing the next role, waiting and loading. The "
+            "group reports elapsed wall time across these stages, including synchronization waits. It accepts "
+            "scoring or training batches once loading and memory checks finish.",
             [("workers/group.py","GroupWorker.switch","if self.infer.owned"),("workers/model.py","inference_signature","def inference_signature"),
              ("backends/teacher_pool.py","TeacherRanks.activate","def activate"),("backends/teacher_rank.py","prepared_rank","def prepared_rank")],
             notes=[
-                ("重用冻结教师的 TP 分片", "可选 teacher_rank_images 将首次从 HF 装入的稠密、非量化 Qwen2 教师保存为 SGLang 原生 rank 分片。镜像按模型来源、TP、设备类型与软件版本区分。仅一个副本持锁写临时目录，分片齐全后原子发布，其他组可继续从 HF 加载。首次使用镜像时按固定前缀对照 HF 的逐位置 logprob。",
+                ("Reusing frozen teacher TP shards",
+                    "With teacher_rank_images enabled, the first Hugging Face load of a dense, unquantized Qwen2 "
+                    "teacher can produce native SGLang rank shards. The image key includes the model source, TP, "
+                    "device type and software versions. One replica holds the write lock and publishes the "
+                    "temporary directory atomically once every shard is present. Other groups can continue "
+                    "loading from Hugging Face. On first use, fixed-prefix log probabilities are checked against "
+                    "Hugging Face at each position.",
                  ("backends/teacher_image.py","TeacherImage.build","LOCK_NB")),
-                ("把 CPU 准备移出 GPU 租期", "异构教师可提前导入运行时。给予 GPU 租约后才启动活动 scheduler，退出时回收 rank 及辅助进程。预检按路由、按卡记录显存需要，后续切换结合当前余量决定能否保留 trainer。trace 的 standby_wait_s、teacher_rank_load_s 和 teacher_rank_release_s 可区分准备未完成、加载和退出。",
+                ("Preparing on the CPU before a GPU lease",
+                    "A heterogeneous teacher can import its runtime ahead of time. The active scheduler starts "
+                    "once it gets the GPU lease. On release, its ranks and helper processes exit. Preflight "
+                    "measures per-GPU memory requirements for each route. Later switches use these measurements "
+                    "and available memory to decide whether the trainer can stay resident. The trace separates "
+                    "remaining preparation time, loading and shutdown in standby_wait_s, teacher_rank_load_s and "
+                    "teacher_rank_release_s.",
                  ("backends/teacher_pool.py","TeacherRanks.release","def release")),
-                ("保留图捕获的缓冲区", "兼容布局仍须装入所选模型的权重。可选 Qwen2 路径允许在受支持的未缩放 RoPE 上原位重建 cos/sin 缓存，保留 CUDA Graph 捕获的地址。启用 request_seed 启动器时，可在捕获 decode 图后恢复 batch-invariant prefill，兼顾解码图和缓存续评。",
+                ("Preserving buffers captured by CUDA graphs",
+                    "Models with compatible layouts still need their own weights. The optional Qwen2 path "
+                    "rebuilds supported unscaled RoPE cosine and sine caches in place, preserving the addresses "
+                    "captured by CUDA graphs. The request_seed launcher can restore batch-invariant prefill "
+                    "after capturing the decode graph, supporting both graph decode and cached scoring "
+                    "continuations.",
                  ("backends/qwen2_rope.py","restore","cache.copy_")),
-                ("按版本保留主机副本", "显存充足时 trainer 可以驻留。启用主机镜像后，FSDP 进程在回复发布完成后复制主参数或 Adam 状态，并标记版本。以后必须卸载时直接接回匹配版本的副本，过期部分重新拷贝。这会占用主机内存和传输带宽，下一条需要该 rank 的命令也可能等待它完成。",
+                ("Versioned host copies",
+                    "With sufficient GPU memory the trainer can stay resident. When host mirroring is enabled, "
+                    "the FSDP process acknowledges publication, then copies master parameters or Adam state to "
+                    "the host and records the version. When unloading later, it reuses matching copies and "
+                    "refreshes stale ones. This consumes host memory and transfer bandwidth. The next command on "
+                    "the rank may need to wait for the copy.",
                  ("backends/fsdp2.py","Shard.sleep","host_moments_version")),
             ]),
-        section("migration", "迁移与 KV", "请求迁移、缓存重建与弹性 TP",
-            "普通合并移动学生请求的执行归属。源组导出采样 seed 和绝对位置，控制器提供 prompt 和已提交的 token。目标组核对版本、归属与剩余 KV 容量，接受后源组才释放请求。目标拒绝时，源组保留所有权。",
-            flow([("hold", "预约两端安全点"),("export / install", "传递采样状态，目标核验容量"),
-                  ("release", "目标确认后释放源端"),("decode", "在目标组上继续采样")])
-            + table(["对象","复用与重建策略"],[
-                ("学生 KV","目标利用已有缓存，未命中的前缀可在接管时预填充，也可延后至下一次 decode。后者能使源组更早开始新工作，但仍消耗目标组算力。"),
-                ("教师 KV","按独立推理副本核算预算，超限时只清理受影响副本的缓存并撤回相应偏移。控制器继续保留已经交付的监督。"),
-                ("尾部宽 TP","真实 SGLang 路径预建同节点配对的宽引擎，发布同版权重后休眠。接管时唤醒并重放前缀，核验末个已提交 token 的 logprob。SimRL 还支持单独研究直接搬运 KV 分片的成本。")])
-            + '<p class="equation"><b>局部 TP 收益估计</b>窄解码时间 − 宽解码时间 − 进出宽布局成本 − 被推迟的服务 − 丢失教师 KV 的重算成本</p>',
-            "扩容要求同节点的这一对组只剩一个活跃请求，其他组仍可生成。控制器同一时刻只允许一对组占用宽布局，worker 在唤醒前复查物理显存。长请求终止后归还卡组，若评分或训练压力先上升，也可提前缩容。tp_eligibility 记录所有权、容量和在途工作等候选筛选原因。",
+        section("migration", "Migration and KV", "Migrating requests, rebuilding caches and widening TP",
+            "An ordinary merge changes which group owns a student request. The source exports the sampling seed "
+            "and absolute position. The controller supplies the prompt and committed tokens. The destination "
+            "checks the version, ownership and remaining KV capacity. The source releases the request after the "
+            "destination accepts it and retains ownership if the destination declines.",
+            flow([("hold", "Reserve a safe point at each end"),("export / install", "Transfer sampling state and verify destination capacity"),
+                  ("release", "Release the source after destination acknowledgment"),("decode", "Resume sampling on the destination")])
+            + table(["State","Reuse and recomputation"],[
+                ("Student KV",
+                    "The destination reuses cached context. It can prefill missing tokens at takeover or on the "
+                    "next decode. Deferral frees the source sooner and leaves the prefill work to the "
+                    "destination."),
+                ("Teacher KV",
+                    "Each inference replica has a separate budget. When a replica is flushed, the controller "
+                    "withdraws its cached offsets and retains scores already delivered."),
+                ("Wide TP for a tail request",
+                    "SGLang prebuilds a wide engine for a pair of groups on one node and puts it to sleep with "
+                    "the matching weight version. On takeover it wakes, replays the prefix and validates the log "
+                    "probability of the last committed token. SimRL can also model the cost of moving KV shards "
+                    "directly.")])
+            +
+                '<p class="equation"><b>Estimated local benefit of wider TP</b>Narrow decode time − wide decode '
+                'time − costs of entering and leaving the wide layout − delayed service − cost of rebuilding '
+                'evicted teacher KV</p>',
+            "Expansion requires one active request across the eligible same-node pair. Other groups can continue "
+            "generating. The controller permits one wide pair at a time, and the worker rechecks physical memory "
+            "before waking the engine. It returns the group when the long request finishes or earlier if scoring "
+            "or training pressure rises. tp_eligibility records screening criteria including ownership, capacity "
+            "and in-flight work.",
             [("backends/executor.py","GroupExecutor.execute","src = self.call"),("backends/sglang_engine.py","Inference.install","contexts ="),
              ("backends/elastic_rollout.py","WideRollout.execute","handoff_logp_error"),("scheduler/search.py","Forecast.layouts","handoff ="),("backends/sim_tp.py","TailTP.transition","def transition")],
             notes=[
-                ("接管前按副本验容量", "普通合并在每个目标推理副本上分别核算已驻留请求、迁入上下文和下一个 quantum 的额度。一个副本的余量不能抵扣另一个副本的短缺。若目标拒绝，控制器记住这对组当时的活跃请求集合，避免在相同集合上反复尝试。",
+                ("Checking admission on each destination replica",
+                    "For an ordinary merge, each destination replica budgets for resident requests, incoming "
+                    "context and the next decode quantum. Spare space on one replica cannot make up a shortfall "
+                    "on another. After a rejection, the controller remembers the pair's active request sets and "
+                    "avoids retries until the sets change.",
                  ("backends/inference_replicas.py","InferenceReplicas.migration_fits","def migration_fits")),
-                ("控制 KV 驱逐和评分准入", "SGLang 以副本为单位清教师缓存。超预算时先找能覆盖缺口的最小副本，若单个副本不足，先清占用最大的。独立教师 rank 按页向上取整，并为每条请求预留分配器空间，把大批拆成能容纳的窗口。即使实际缓存已被引擎逐出，冷启动窗口仍可接纳。",
+                ("Teacher KV eviction and scoring admission",
+                    "SGLang flushes teacher caches by replica. To cover a shortfall it chooses the smallest "
+                    "replica large enough, or starts with the largest if none suffices. Dedicated teacher ranks "
+                    "round up to whole pages, reserve allocator headroom per request and split large batches "
+                    "into windows that fit. Each cold window fits even if the engine has evicted the cached "
+                    "prefix.",
                  ("backends/score_cache.py","trim_score_cache","enough =")),
-                ("预建宽引擎和启动门控", "开训前建立同节点宽 TP 通信和引擎，按单请求解码捕获 batch 1 图（启用 CUDA Graph 时），测量唤醒、休眠、重算和宽解码。FSDP 进程可并行做 CPU 导入，宽引擎休眠后才开放 CUDA 初始化。休眠后的实际残留与再次唤醒的显存分别记录为 idle_device_bytes 与 wake_bytes。",
+                ("Building the wide engine and coordinating startup",
+                    "Before training, the worker establishes same-node wide TP communication and engines. With "
+                    "CUDA graphs enabled, it captures a batch-one graph for single-request decode. It measures "
+                    "wake, sleep, recomputation and wide decode. FSDP processes can import CPU libraries "
+                    "concurrently and start CUDA initialization after the wide engine sleeps. idle_device_bytes "
+                    "records memory retained during sleep and wake_bytes records the memory required to wake.",
                  ("workers/node.py","NodeRuntime.prepare","gate =")),
-                ("真机交接与模拟重分片", "真机宽引擎核对 seed、绝对位置和版本，重放前缀并比较末个 token 的 logprob，回执分别记录 wake_s、prefill_s 和 rebuilt_tokens。另一个仅供 SimRL 研究的方案按逻辑 KV 头估计分片传输，第一次借卡另计建通信组，提前缩容只搬回扩容后新增的部分。两个方案的传输字节含义不同。",
+                ("Hardware handoff and simulated resharding",
+                    "The wide engine validates the seed, absolute position and version, replays the prefix and "
+                    "compares the last token's log probability. The completion reports wake_s, prefill_s and "
+                    "rebuilt_tokens separately. An alternative SimRL model estimates direct transfers by logical "
+                    "KV heads, charges communication group setup on the first loan and returns only shards added "
+                    "since expansion on early contraction. Transfer byte counts describe different operations in "
+                    "these two paths.",
                  ("backends/simulation.py","Simulator.resize_tp","tp_prefix_tokens")),
             ]),
-        section("publication", "梯度与发布", "全轮梯度归一化与版本发布",
-            "每个 FSDP2 组只认领就绪样本，并以 θᵥ 完成本轮前反向。对齐 verl 的 sampled K1 路径逐响应位置计算损失。各微批累积损失梯度之和与有效响应 token 数，优化器组在轮末校验全局分母。",
-            '<p class="equation"><b>全轮梯度</b><code>gᵥ = (∑ₘ ∑ⱼ∈Bₘ ∇ℓⱼ(θᵥ)) / N</code><i>Bₘ 为微批的有效响应位置，N 为全轮这些位置的总数。不同长度微批按其有效 token 数贡献梯度。</i></p>'
-            + flow([("归约", "同一分片 rank 汇集梯度"),("commit", "除以 N、裁剪、执行一次 AdamW"),
-                    ("权重发布", "节点内构造或接收 BF16 桶"),("rollout_barrier", "所有生成组确认 v+1")]),
-            "多副本张量发布先同步主参数分片，各节点可从本地分片构造训练参数的 rollout 桶，需分发的冻结参数或缓冲区由权威副本提供。所有接收端确认后才能复用发布缓冲区。下一轮采样等待版本屏障，checkpoint 持久化另行记录。",
+        section("publication", "Gradients and weights", "Round-wide gradient normalization and weight publication",
+            "Each FSDP2 group claims ready samples and runs forward and backward passes with θᵥ. Sampled K1 "
+            "computes one loss per response position. Microbatches accumulate sums of loss gradients and counts "
+            "of valid response tokens. At round end the optimizer group checks the global denominator.",
+            '<p class="equation"><b>Round-wide gradient</b><code>gᵥ = (∑ₘ ∑ⱼ∈Bₘ ∇ℓⱼ(θᵥ)) / N</code><i>Bₘ '
+            'contains the valid response positions in microbatch m, and N counts them over the whole round. Each '
+            'microbatch contributes in proportion to its valid token count.</i></p>'
+            + flow([("Reduce", "Aggregate gradients across corresponding shard ranks"),("commit", "Divide by N, clip and take one AdamW step"),
+                    ("Publish weights", "Build or receive BF16 buckets on each node"),("rollout_barrier", "All generation groups acknowledge v+1")]),
+            "To publish tensors across replicas, workers first synchronize master parameter shards. Each node "
+            "can then build rollout buckets for trainable parameters locally. The authoritative replica "
+            "distributes frozen parameters and buffers when needed. Buffers can be reused once all receivers "
+            "acknowledge them. Sampling waits for the new-version barrier, and checkpoint persistence is "
+            "recorded separately.",
             [("backends/fsdp2.py","Shard.commit","g.div_(n)"),("backends/replica_sync.py","reduce_gradients","def reduce_gradients"),
              ("backends/weight_sync.py","TensorPublisher.bucket","def bucket"),("scheduler/controller.py","Controller.run_round",'self.emit("rollout_barrier"')],
             notes=[
-                ("对齐 verl 的损失输入", "默认 on_policy_k1 在同一轮初 actor 上无梯度重算 old logprob，再做有梯度的前向。已采样位置的 teacher 与当前 actor 的 logprob 差构成停止求导的 advantage，沿 verl 对照的 PPO clip 和 dual clip 计算损失。这让提前反向仍使用与同步对照相同的目标。",
-                 ("algorithms/verl_k1.py","policy_loss","advantage =")),
-                ("按最慢 rank 优化训练", "启用变长 FlashAttention 时，较长样本先分给累计 token 最少的 rank。各条序列重置 position ID，用 cu_seqlens 隔开注意力，只对预测回答的位置投影词表 logits。空 rank 走相同 collective，以零损失和零有效 token 参与。搜索中的 train_width 使用对应的 packed 或 padded 布局。",
+                ("Policy loss on sampled tokens",
+                    "The default on_policy_k1 objective recomputes old log probabilities on the frozen "
+                    "round-start actor without gradients, then runs a differentiable forward pass. At sampled "
+                    "positions, the difference between teacher and current actor log probabilities forms the "
+                    "detached advantage. PPO ratio clipping and dual clipping yield the loss. Early backward "
+                    "passes use the same objective as a fully synchronous schedule.",
+                 ("algorithms/token_losses.py","clipped_k1","advantage =")),
+                ("Training time on the slowest rank",
+                    "With variable-length FlashAttention, longer samples are assigned first to the rank with the "
+                    "fewest accumulated tokens. Each sequence resets position IDs. cu_seqlens keeps attention "
+                    "within sequence boundaries, and only positions predicting response tokens need vocabulary "
+                    "logits. Empty ranks join the same collectives with zero loss and zero valid tokens. The "
+                    "search uses the matching packed or padded layout for train_width.",
                  ("backends/fsdp2.py","Shard.response_logits","logits_to_keep")),
-                ("固定通信组接受动态训练成员", "优化器所在组仍可能在跑长尾，其他组已能完成全部反向。归约前先在小张量上检查版本、分母和梯度存在性。跨组用同序号 FSDP rank 及有上限的 FP32 分桶，推理组以零贡献加入 collective，模型主体可留在 CPU。",
+                ("Fixed communication groups with changing training membership",
+                    "Other groups may finish every backward pass while the optimizer group is still decoding a "
+                    "tail. Before reduction, workers use small tensors to check the version, denominator and "
+                    "gradient availability. Cross-group reduction uses corresponding FSDP ranks and bounded FP32 "
+                    "buckets. Inference groups join with zero contributions and can leave the model on the CPU.",
                  ("backends/replica_sync.py","reduce_gradients","Exchange the actual")),
-                ("一次构桶，窄宽引擎并发消费", "各副本确认更新后的 FP32 分片后，可在本地重建只含可训练参数的 BF16 桶，减少跨节点重复广播。窄、宽引擎并发加载时，同一源张量为每个消费者各导出独立 CUDA IPC 句柄，均确认后才复用内存。最后一轮无需再给宽引擎发新权重。wide_publish_exposed_s 单列宽发布超过同组窄发布的时间。",
+                ("Publishing one bucket to narrow and wide engines",
+                    "After replicas confirm the updated FP32 shards, each node can rebuild BF16 buckets "
+                    "containing trainable parameters locally, reducing cross-node broadcasts. Narrow and wide "
+                    "engines can load a bucket concurrently. Each consumer receives its own CUDA IPC handle to "
+                    "the same source tensor and acknowledges it before the memory is reused. The final round "
+                    "skips wide-engine publication. wide_publish_exposed_s measures how much longer wide "
+                    "publication takes than narrow publication on the same group.",
                  ("workers/group.py","GroupWorker.load_buckets","parallel =")),
-                ("分开计量提交、发布与恢复", "内存发布每轮发生，HF 导出和包含优化器的 DCP 检查点按配置写入。可恢复检查点同时保存轮最大长度 EMA。只导出模型的版本适合评估，继续训练要从含训练状态的版本恢复。端到端作业、轮时、去掉持久化的稳态步时有不同边界。",
+                ("Measuring commit, publication and recovery separately",
+                    "In-memory publication happens each round. HF exports and DCP checkpoints with optimizer "
+                    "state follow the checkpoint configuration. Resumable checkpoints also store the EMA of "
+                    "round maximum response lengths. Model-only exports support evaluation. Resuming training "
+                    "requires a version with training state. End-to-end job time, round time and steady-state "
+                    "step time excluding persistence cover different intervals.",
                  ("backends/fsdp2.py","Shard.save_checkpoint","scheduler_state")),
             ]),
-        section("interfaces", "扩展与对照", "拓扑、算法与可复现对照",
-            "系统把资源预留、训练目标和决策策略分开。比较一种调度改动时，可以固定数据、路由、初始参数、引擎布局与训练目标，只替换这一项。",
-            table(["边界", "实现与实验含义"], [
-                ("节点和卡组", "Ray 在启动引擎前预留作业所需资源，检查物理 GPU 归属。每个节点执行本地 worker，异构教师可读节点本地暂存权重。常规迁移可跨节点，宽 TP 限于同节点的已建组对。"),
-                ("蒸馏目标", "DistillationAlgorithm 声明监督类型和是否重算 old logprob，route 选择冻结教师，token_loss 返回逐位置损失。可接 sampled KL 或 teacher top-k，复用同一版本屏障、微批协议与全轮分母。"),
-                ("调度消融", "固定 cost_search 与负载，分别设置 policy_options.live_prefix_scoring=false、early_training=false、max_pairs=0 或 allow_tp_expansion=false。merge_backfill 可单独关。扩容对照保留相同宽引擎、预留显存和发布开销。"),
-                ("观测", "dispatch 记录派发，complete.start/end 记录 worker 动作区间，双组动作共用一次回执。Ray 的 GPU 采样对齐 driver 时钟并保留时钟不确定度。活动时间线与 NVML 利用率各有独立数据来源。")]),
-            "同一调度器内关闭一项动作可以测它对整轮的边际影响。与原版 KDFlow、verl 比较时还要分别核对 GPU 数、TP、副本数、实际输出与训练 token，以及计时边界。",
+        section("interfaces", "Extension points", "Topology, objectives and reproducible comparisons",
+            "Resource reservations, the training objective and scheduling are configured separately. To study a "
+            "scheduling change, hold the data, routes, initial parameters, engine layout and objective fixed and "
+            "vary one scheduling option.",
+            table(["Interface", "Implementation and experimental controls"], [
+                ("Nodes and GPU groups",
+                    "Ray reserves the job's resources before the engines start and checks physical GPU "
+                    "ownership. Each node runs a local worker, and heterogeneous teachers can load locally "
+                    "staged weights. Ordinary migrations can cross nodes. Wide TP uses prebuilt pairs on one "
+                    "node."),
+                ("Distillation objective",
+                    "DistillationAlgorithm declares the required supervision and whether to recompute old log "
+                    "probabilities. Its route selects a frozen teacher, and token_loss returns a loss per "
+                    "position. Sampled KL and teacher top-k objectives can share the version barrier, microbatch "
+                    "protocol and round-wide denominator."),
+                ("Scheduling ablations",
+                    "Keep cost_search and the workload fixed. Disable one feature at a time with "
+                    "policy_options.live_prefix_scoring=false, early_training=false, max_pairs=0 or "
+                    "allow_tp_expansion=false. merge_backfill can be disabled independently. When comparing "
+                    "expansion policies, keep the wide engine, memory reservation and publication overhead the "
+                    "same."),
+                ("Observability",
+                    "dispatch records the action sent, and complete.start/end records the worker interval. A "
+                    "two-group action has one completion record. Ray aligns GPU samples with the driver clock "
+                    "and records clock uncertainty. The activity timeline and NVML utilization use separate data "
+                    "sources.")]),
+            "Disabling one action within the same scheduler measures its marginal effect on a round. When "
+            "comparing DynaMOPD runs, check GPU count, TP width, replica count, actual generated and training "
+            "token counts, and the boundaries of each timing metric.",
             [("cluster/ray.py","RayExecutor.__init__","Check shared paths"),("cluster/ray.py","RayExecutor.gpu_monitor","uncertainty"),
              ("algorithms/base.py","DistillationAlgorithm.loss_sum","terms ="),("scheduler/search.py","CostSearchPolicy.__init__","allow_wide")]),
     ]
@@ -309,7 +537,7 @@ def scan_trace(stream, name, requested):
         if kind == "round_end":
             r["end"] = e["t"]
             if r["end"] <= r["start"]:
-                raise ValueError("round_end 必须晚于 round_start")
+                raise ValueError("round_end must be later than round_start")
             result = (version, r, backend, groups)
             if requested is not None or r["searches"]:
                 return result
@@ -338,23 +566,23 @@ def scan_trace(stream, name, requested):
                 r["teacher_formats"].add(str(e["teacher_load_format"]))
             if op in ("move", "tp_expand", "tp_shrink"):
                 phases = []
-                for key, label in (("export", "导出"), ("install", "接管"), ("release", "释放")):
+                for key, label in (("export", "export"), ("install", "install"), ("release", "release")):
                     start, end = e.get(key + "_start"), e.get(key + "_end")
                     if isinstance(start, (int, float)) and isinstance(end, (int, float)):
                         phases.append(f"{label} {end-start:.3f} s")
-                for key, label in (("wake_s", "唤醒"), ("prefill_s", "前缀重算"), ("sleep_s", "休眠"),
-                                   ("kv_transfer_s", "KV 传输")):
+                for key, label in (("wake_s", "wake"), ("prefill_s", "prefix recomputation"), ("sleep_s", "sleep"),
+                                   ("kv_transfer_s", "KV transfer")):
                     if isinstance(e.get(key), (int, float)):
                         phases.append(f"{label} {e[key]:.3f} s")
                 width = (f"TP{e['from_tp']} → TP{e['to_tp']}"
                          if e.get("from_tp") is not None and e.get("to_tp") is not None else OPS[op][0])
                 if e.get("accepted") is False:
-                    width += "（拒绝）"
-                r["handoffs"].append((a, b, g, peer, width, "，".join(phases) or "未单列"))
+                    width += " (rejected)"
+                r["handoffs"].append((a, b, g, peer, width, ", ".join(phases) or "No phase breakdown"))
             if decision is not None:
                 r["receipts"][decision].append(info)
     if fallback is None:
-        raise ValueError("所选 trace 或版本缺少成对的 round_start / round_end")
+        raise ValueError("The selected trace or version has no matching round_start and round_end events")
     return fallback
 
 
@@ -373,7 +601,7 @@ def actual_figure(r, size):
         if role:
             label += f" → {role}"
         if accepted is False:
-            label += "（未接纳）"
+            label += " (rejected)"
         desc = f"{label} · {a-zero:.3f}–{b-zero:.3f} s"
         left, right = max(0,a-zero)/duration*100, min(duration,b-zero)/duration*100
         bar = (f'<span title="{esc(desc)}" class="bar {style}" '
@@ -385,10 +613,10 @@ def actual_figure(r, size):
     for g in sorted(set(lanes) | set(range(size or 0))):
         html_rows.append(f'<div class="lane"><b>G{g}</b><div class="track">{"".join(lanes[g])}</div></div>')
     keys = ''.join(f'<span><i class="{k}"></i>{esc(v)}</span>' for k,v in LABELS.items())
-    return (f'<figure class="actual"><figcaption>每组的 worker 动作区间 <small>轮初至轮末 {duration:.2f} s</small></figcaption>'
-            f'<div class="legend">{keys}</div><div class="lane"><b>秒</b><div class="axis">'
+    return (f'<figure class="actual"><figcaption>Worker activity by GPU group <small>Round duration {duration:.2f} s</small></figcaption>'
+            f'<div class="legend">{keys}</div><div class="lane"><b>Seconds</b><div class="axis">'
             f'<span>0</span><span>{duration/2:.1f}</span><span>{duration:.1f}</span></div></div>'
-            f'{"".join(html_rows)}<p class="caption">悬停查看起止时间。同一双组操作标在两行，灰底表示没有对应动作回执。条长含 worker 和通信等待。</p></figure>')
+            f'{"".join(html_rows)}<p class="caption">Hover over a bar for start and end times. A two-group operation appears on both rows. Gray intervals have no recorded worker action. Bar lengths include worker and communication waits.</p></figure>')
 
 
 def trace_section(trace):
@@ -397,13 +625,13 @@ def trace_section(trace):
     if r["handoffs"]:
         handoffs = [(f"{a-r['start']:.3f}", group_label(g, peer), width, f"{b-a:.3f}", phases)
                     for a, b, g, peer, width, phases in sorted(r["handoffs"], key=lambda x: x[0])]
-        chart += ('<h3>本轮全部请求迁移和 TP 交接</h3>'
-                  + table(["轮内开始 / s", "参与组", "动作", "交接耗时 / s", "回执中的分项"], handoffs)
-                  + '<p class="caption">每次双组交接计一次。分项只覆盖回执单列的阶段，总耗时还包括 RPC 与等待。</p>')
+        chart += ('<h3>Request migrations and TP handoffs in this round</h3>'
+                  + table(["Start in round (s)", "Groups", "Action", "Handoff time (s)", "Reported phases"], handoffs)
+                  + '<p class="caption">Each paired handoff counts once. Workers time selected phases individually. Total duration also includes RPC overhead and waiting.</p>')
     else:
-        chart += '<p>这一轮没有记录请求迁移或 TP 交接的完成回执。</p>'
+        chart += '<p>No request migration or TP handoff completed in the recorded trace for this round.</p>'
     if r["teacher_formats"]:
-        chart += '<p>本轮教师换岗回执记录的加载格式为 ' + esc("、".join(sorted(r["teacher_formats"]))) + '。</p>'
+        chart += '<p>Teacher switches in this round used ' + esc(", ".join(sorted(r["teacher_formats"]))) + '.</p>'
     case = None
     for decision in r["searches"]:
         linked = r["receipts"].get(decision["id"], [])
@@ -423,34 +651,34 @@ def trace_section(trace):
             if mode in seen and not chosen:
                 continue
             seen.add(mode)
-            shown.append((mode, "、".join(f"G{n}" for n in pair) if pair else "—", f"{seconds:.3f}", "选中" if chosen else ""))
-        chart += (f'<h3>轮内 {case["time"]-r["start"]:.3f} s 的决策</h3><p>每种布局列出预测最快的卡组组合，'
-                  f'并保留实际选中的组合。预计余时从决策点算到本轮发布。</p>'
-                  + table(["候选布局", "参与组", "预计余时 / s", "决策"], shown))
+            shown.append((mode, ", ".join(f"G{n}" for n in pair) if pair else "—", f"{seconds:.3f}", "Selected" if chosen else ""))
+        chart += (f'<h3>Decision at {case["time"]-r["start"]:.3f} s into the round</h3><p>The table shows the fastest predicted group combination for each layout and the combination actually selected. '
+                  f'Remaining time runs from the decision to weight publication.</p>'
+                  + table(["Candidate layout", "Groups", "Predicted time remaining (s)", "Decision"], shown))
         selected = next((t for mode, pair, t in rows if mode == case["chosen"] and pair == case["pair"]), None)
         natural = next((t for mode, _, t in rows if mode == "natural"), None)
         if case["chosen"] != "natural" and selected is not None and natural is not None:
             delta = natural - selected
-            direction = "短" if delta >= 0 else "长"
-            chart += f'<p>按决策时的估计，选中布局的剩余轮时比自然排空{direction} {abs(delta):.3f} s。动作耗时由 worker 的起止回执另行计量。</p>'
+            direction = "shorter" if delta >= 0 else "longer"
+            chart += f'<p>At decision time, the scheduler estimated that the selected layout would take {abs(delta):.3f} s {direction} than natural draining. Workers report actual action start and end times separately.</p>'
         linked = r["receipts"].get(case["id"], [])
         if linked:
             actions = []
             for g, peer, op, a, b, accepted, role, transfer in linked:
-                outcome = "未接纳" if accepted is False else "完成"
+                outcome = "Rejected" if accepted is False else "Completed"
                 detail = role if op == "switch" else transfer
                 actions.append((group_label(g,peer), OPS[op][0], f"{a-r['start']:.3f}–{b-r['start']:.3f}",
                                 f"{b-a:.3f}", outcome + (f" · {detail}" if detail else "")))
-            chart += '<h3>该决策实际派发并收到回执的动作</h3>'+table(["组","动作","起止 / s","用时 / s","回执"],actions)
+            chart += '<h3>Completed actions dispatched by this decision</h3>'+table(["Group","Action","Start–end (s)","Duration (s)","Outcome"],actions)
         else:
-            chart += '<p>此决策没有可按 decision_id 与派发配对的完成回执。上图保留本轮全部已记录动作。</p>'
+            chart += '<p>This decision has no completion record that matches a dispatch by decision_id. The timeline shows all recorded actions in the round.</p>'
     else:
-        chart += '<p>该轮未记录多候选的 schedule_search。图中展示实际返回的动作区间。</p>'
-    clock = "模拟时钟" if backend == "simrl" else ("真机回执" if backend == "sglang_fsdp2" else "执行器回执")
-    group_count = f"，共 {groups} 个卡组" if groups else ""
-    return section("case-study", "运行案例", "布局预测与执行回执",
-        f"学生版本 v{v} → v{v+1}{group_count}。同轮{clock}以 round_start 为零点。",
-        chart, "决策按同一版本与 decision_id 关联到派发，再用独占组上的动作关联到完成回执。优先取第一条实际完成迁移或 TP 交接的多候选决策，否则取第一条多候选决策。预测差值描述决策时的估计。实际轮时收益需要通过匹配负载的对照运行测量。",
+        chart += '<p>The trace contains no schedule_search event with multiple candidates for this round. The timeline shows the recorded worker intervals.</p>'
+    clock = "the simulation clock" if backend == "simrl" else ("hardware worker times" if backend == "sglang_fsdp2" else "executor times")
+    group_count = f" across {groups} GPU groups" if groups else ""
+    return section("case-study", "Run example", "Predicted layouts and observed execution",
+        f"Student version v{v} → v{v+1}{group_count}. Times use {clock} and are relative to round_start.",
+        chart, "Decisions match dispatches by version and decision_id, then match completions by action on the exclusively leased groups. This example uses the first multi-candidate decision with a completed migration or TP handoff, or the first multi-candidate decision if none resulted in a handoff. The predicted difference describes the estimate available at decision time. Measuring the actual change in round duration requires runs with matched workloads.",
         [("scheduler/controller.py","Controller.settle",'self.emit("complete"'),("tools/audit.py","audit","def audit")])
 
 
@@ -459,7 +687,7 @@ STYLE = """
   --ink:#193136; --muted:#526767; --line:#d7e1de; --green:#006557; --wash:#f1f6f3;
   --gen:#26786b; --score:#496ea5; --train:#984461; --move:#a46629; --update:#6c529a;
   color:var(--ink); background:white;
-  font:16px/1.72 "Source Sans 3","Noto Sans CJK SC","Microsoft YaHei",system-ui,sans-serif;
+  font:16px/1.72 "Source Sans 3",system-ui,sans-serif;
 }
 *{box-sizing:border-box}body{margin:0}a{color:var(--green);text-underline-offset:3px}
 a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var(--green);outline-offset:2px}
@@ -541,7 +769,7 @@ document.getElementById('print').onclick = () => window.print();
 def write_guide(output, trace=None, version=None, simrl=None):
     output = output.resolve()
     if trace and trace.resolve() == output:
-        raise ValueError("输出文件不能覆盖输入 trace")
+        raise ValueError("The output path would overwrite the input trace")
     simrl = simrl or ROOT.parent / "SimRL"
     record = read_trace(trace, version) if trace else None
     sections = design_sections(record)
@@ -555,19 +783,19 @@ def write_guide(output, trace=None, version=None, simrl=None):
         detail = ""
         if notes:
             rows = "".join(f"<dt>{esc(title)}</dt><dd>{esc(reason)}</dd>" for title, reason, _ in notes)
-            detail = (f'<details class="design-notes"><summary>实现取舍 · {esc(notes[0][0])}等 {len(notes)} 项'
+            detail = (f'<details class="design-notes"><summary>Implementation notes ({len(notes)}) · {esc(notes[0][0])}'
                       f'</summary><dl>{rows}</dl></details>')
         refs = ''.join(source(ref, output, simrl) for ref in [*item["refs"], *(ref for _, _, ref in notes)])
         blocks.append(f'<section id="{anchor}"><h2>{esc(item["title"])}</h2>'
                       f'<p>{esc(item["lead"])}</p>{item["body"]}<p>{esc(item["closing"])}</p>{detail}'
-                      f'<details class="sources"><summary>源码位置</summary>{refs}</details></section>')
-    document = (f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+                      f'<details class="sources"><summary>Source code</summary>{refs}</details></section>')
+    document = (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
                 f'<meta name="viewport" content="width=device-width, initial-scale=1">'
-                f'<title>DynaMOPD · 同步多教师蒸馏系统设计</title><style>{STYLE}</style></head><body>'
-                f'<header><div><a href="#top">DynaMOPD</a><button id="print" type="button">打印文档</button></div></header>'
-                f'<div class="layout"><nav aria-label="目录">{"".join(navigation)}</nav><main>'
-                f'<div class="title" id="top"><h1>同步多教师蒸馏的轮内并行</h1>'
-                f'<p>SimRL 成本建模、动态卡组调度与 SGLang / FSDP2 执行</p></div>'
+                f'<title>DynaMOPD · System design for synchronous multi-teacher distillation</title><style>{STYLE}</style></head><body>'
+                f'<header><div><a href="#top">DynaMOPD</a><button id="print" type="button">Print guide</button></div></header>'
+                f'<div class="layout"><nav aria-label="Contents">{"".join(navigation)}</nav><main>'
+                f'<div class="title" id="top"><h1>Intra-round parallelism in synchronous multi-teacher distillation</h1>'
+                f'<p>SimRL cost modeling, dynamic GPU group scheduling and execution with SGLang and FSDP2</p></div>'
                 f'{"".join(blocks)}</main></div><script>{JS}</script></body></html>')
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(document, encoding="utf-8")
@@ -575,13 +803,13 @@ def write_guide(output, trace=None, version=None, simrl=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path, default=ROOT/"runs"/"system-design.html", help="输出自包含 HTML")
-    parser.add_argument("--trace", type=Path, help="可选的 events.jsonl 或包含它的运行目录")
-    parser.add_argument("--version", type=int, help="轮初 student 版本，默认选择有多候选决策的首个完整轮")
-    parser.add_argument("--simrl-root", type=Path, help="可选 SimRL 源码目录，用于显示原项目代码摘录")
+    parser.add_argument("--out", type=Path, default=ROOT/"runs"/"system-design.html", help="path for the self-contained HTML guide")
+    parser.add_argument("--trace", type=Path, help="optional events.jsonl trace or run directory containing it")
+    parser.add_argument("--version", type=int, help="student version at round start (default: first complete round with a multi-candidate decision, or first complete round)")
+    parser.add_argument("--simrl-root", type=Path, help="optional SimRL source directory for displaying code excerpts")
     args = parser.parse_args()
     if args.version is not None and not args.trace:
-        parser.error("--version 需要 --trace")
+        parser.error("--version requires --trace")
     trace = args.trace/"events.jsonl" if args.trace and args.trace.is_dir() else args.trace
     try:
         write_guide(args.out, trace, args.version, args.simrl_root)

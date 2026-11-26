@@ -1,1 +1,1 @@
-"""Command-line tools for baselines, evaluation, traces and regression checks."""
+"""Command-line tools for training evaluation, traces and regression checks."""
