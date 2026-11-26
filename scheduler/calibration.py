@@ -100,23 +100,40 @@ def share_ready(s, idle, *, early_training=True, live_prefix=True, calibrated=Fa
 
 
 def calibration_round(s, allow_merge, early_training, live_prefix):
+    """Return True if this decision served startup or a still-missing migration probe."""
     live = defaultdict(list)
     for r in s.rows.values():
         if not r.finish:
             live[r.owner].append(r)
-    # Measure one real, feasible handoff. Acknowledged ownership and the worker's
-    # memory admission are identical to a normal cost-search migration.
-    if allow_merge and not s.holds and "move_base" not in s.cost.values and not any(
-            g.busy and g.busy.kind == "move" for g in s.groups):
-        candidates = [(a,b) for a in live for b in live if a != b and live[a] and live[b]
-                      and not s.groups[a].busy and all(r.tokens for r in live[a])
-                      and s.groups[b].role == "rollout" and (not s.groups[b].busy or s.groups[b].busy.kind=="decode")
-                      and len(live[a])+len(live[b]) <= s.cfg["decode_batch"]
-                      and (frozenset(r.rid for r in live[a]),frozenset(r.rid for r in live[b]))
-                      != s.rejected_moves.get((a,b))]
-        if candidates:
-            a,b=min(candidates,key=lambda pair: (len(live[pair[0]]),len(live[pair[1]])))
-            yield Action("hold",a,s.version,peer=b)
+    moving = any(g.busy and g.busy.kind == "move" for g in s.groups)
+    resizing = s.tp_pair or any(g.busy and g.busy.kind in ("tp_expand", "tp_shrink") for g in s.groups)
+    candidates = []
+    if allow_merge and not (s.holds or moving or resizing) and "move_base" not in s.cost.values:
+        # The final capacity check is performed by the receiving worker at the safe point.
+        lanes = s.cfg.get("group_size", 1) // s.cfg.get("inference_tp_size", s.cfg.get("group_size", 1))
+        capacity = s.cfg.get("engine_kv_tokens", float("inf"))
+        loads = {g: [0] * lanes for g in live}
+        ids = {g: frozenset(r.rid for r in rows) for g, rows in live.items()}
+        for g, rows in live.items():
+            for r in rows:
+                lane = r.seed // len(s.groups) % lanes
+                loads[g][lane] += len(r.prompt) + len(r.tokens) + s.cfg["quantum"]
+        for src, rows in live.items():
+            if s.groups[src].busy or not all(r.tokens for r in rows):
+                continue
+            for dst in live:
+                busy = s.groups[dst].busy
+                if src == dst or (busy and busy.kind != "decode") or s.groups[dst].role != "rollout":
+                    continue
+                if s.rejected_moves.get((src, dst)) == (ids[src], ids[dst]):
+                    continue
+                if all(a + b <= capacity for a, b in zip(loads[src], loads[dst])):
+                    candidates.append((src, dst))
+    if candidates:
+        src, dst = min(candidates, key=lambda pair: (sum(loads[pair[0]]), sum(loads[pair[1]])))
+        yield Action("hold", src, s.version, peer=dst)
+    elif s.cfg.get("sim_worker_profile") and not (s.holds or moving):
+        return False
     held=set(s.holds)|set(s.holds.values())
     for src,dst in list(s.holds.items()):
         if s.groups[src].busy or s.groups[dst].busy:
@@ -136,3 +153,4 @@ def calibration_round(s, allow_merge, early_training, live_prefix):
         else:
             idle.append(g)
     yield from share_ready(s,idle,early_training=early_training,live_prefix=live_prefix)
+    return True

@@ -79,7 +79,8 @@ def load_data(path):
         import pyarrow.parquet as pq
         records = pq.read_table(path).to_pylist()
     else:
-        records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        with path.open(encoding="utf-8") as stream:
+            records = [json.loads(line) for line in stream if line.strip()]
     if not records:
         raise ValueError("empty training dataset")
     return records

@@ -111,8 +111,9 @@ def observations(cfg, events):
             elif op == "commit":
                 point["mode"] = "durable" if e.get("durable", True) else "export" if e.get("hf_checkpoint") else "step"
             elif op == "move":
-                point.update(accepted=e["accepted"], rebuilt=e.get("rebuilt_tokens", 0),
-                             install=e["install_end"] - e["install_start"])
+                point["accepted"] = e["accepted"]
+                if e["accepted"]:
+                    point.update(rebuilt=e.get("rebuilt_tokens", 0), install=e["install_end"] - e["install_start"])
             yield point
 
 
@@ -258,7 +259,12 @@ def evaluate(cfg, points, trained, held, validation=None, extra_fitting=()):
             historical[p["old"], p["new"]].append(p)
     pair = {edge: median(p["unload"] for p in group) + median(p["load"] + p.get("wait_s", 0.) for p in group)
             for edge, group in historical.items()}
-    old_train = median(p["dt"] / sum(p["lengths"]) for p in fitting if p["op"] == "train")
+    fitted_switches = [p["unload"] + p["load"] for p in fitting if p["op"] == "switch"]
+    fallback_switch = cfg["costs"].get("switch")
+    if fallback_switch is None and fitted_switches:
+        fallback_switch = median(fitted_switches)
+    train_rates = [p["dt"] / sum(p["lengths"]) for p in fitting if p["op"] == "train"]
+    old_train = median(train_rates) if train_rates else cfg["costs"].get("train_token")
     decode_steps = [p["dt"] / max(l[1] for l in p["lanes"]) for p in fitting if "lanes" in p]
     score_points = [(p["critical_tokens"], p["dt"]) for p in fitting if "critical_tokens" in p]
     pooled_score = fit_line(score_points) if score_points else None
@@ -269,10 +275,12 @@ def evaluate(cfg, points, trained, held, validation=None, extra_fitting=()):
             continue
         if p["op"] == "switch":
             key, cell = fitted_switch(profile, p["keys"], p["release_key"])
-            base = pair.get((p["old"], p["new"]), cfg["costs"]["switch"])
+            base = pair.get((p["old"], p["new"]), fallback_switch)
+            if base is None:
+                raise ValueError("no switch timing in the fitting rounds or configuration")
             legacy = base + (cfg.get("sim_replica_sync_s", cfg.get("sim_publish_s", 1.))
                              if p["pub"] and cfg.get("max_train_groups", 1) > 1 else 0.)
-            pred = cell["unload"] + cell["load"] if cell else cfg["costs"]["switch"]
+            pred = cell["unload"] + cell["load"] if cell else base
             if "prepare_elapsed" in p:
                 pred += max(0., profile.get("teacher_prepare_s", 0.) - p["prepare_elapsed"])
             label = "publish" if p["pub"] else "switch"
@@ -299,6 +307,8 @@ def evaluate(cfg, points, trained, held, validation=None, extra_fitting=()):
             label = "score/" + p["role"]
         elif p["op"] == "train":
             key = "train"
+            if old_train is None:
+                raise ValueError("no train timing in the fitting rounds or configuration")
             legacy = sum(p["lengths"]) * old_train
             pred = train_seconds(dict(cfg, sim_worker_profile=profile), p["lengths"])
             label = "train"

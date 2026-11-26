@@ -231,6 +231,8 @@ python -m DynaMOPD.run --simulate --policy elastic_tp --sim-tp-profile "$profile
 
 启动器检查最终命令，保存布局、配置和数据摘要。跨系统汇总再次核对这些记录。原生 verl 在本仓库入口中为 actor 和教师分别预留 GPU。同一节点预算下，它的可用 rollout 副本数与全卡生成方案不同。可以用新目录和 `--systems verl` 单独准备、运行和查看该参考。已有实验保留原始数据，单系统汇总可用 `--training-only --systems 系统名`。早先三系统表格只能用于查看各自配置的绝对耗时。[基准启动器](tools/benchmark.py) · [布局核对](tools/benchmark_layout.py)
 
+严格 K1 对照在原生 verl 的 actor 更新完成后记录该批 loss mask 的有效 token 数，指标为 `actor/effective_training_tokens`。历史日志若缺少该指标，仍可查看原始步时，但不能据此确认训练覆盖了全部生成 token。固定前缀 KL 会在加载模型前核对各检查点的 token 到 ID 映射。
+
 ```bash
 PY=${PYTHON:-python}
 export MOPD_PROFILE_ROOT="${MOPD_PROFILE_ROOT:?set your benchmark profile directory}"

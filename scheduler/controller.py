@@ -64,7 +64,7 @@ class Controller:
         # A request can outlive the forecast. Then use its conditional residual again.
         if self.live_count == 1 and self.max_length_ema is not None and current < self.max_length_ema:
             return min(row.limit-current, max(1., self.max_length_ema-current))
-        seen = self.prior_lengths.get((row.teacher, row.limit)) or self.history[row.teacher]
+        seen = self.prior_lengths.get((row.teacher, row.limit), self.prior_lengths.get(row.teacher, ()))
         start = bisect_right(seen, current)
         middle = (start + len(seen)) // 2
         if start < len(seen):

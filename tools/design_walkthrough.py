@@ -169,8 +169,8 @@ def design_sections(trace):
              ("SimRL/srl/cost/rollout/roofline.py","UnifiedRoofline._raw","return ("),("backends/simulation.py","Simulator.wait","heappop"),
              ("backends/sim_profile.py","decode_features","ticks ="),("scheduler/calibration.py","update_profile","fit_profile(cfg")],
             notes=[
-                ("在首轮训练中测量", "标准 SGLang 策略启动时清除旧作业的时间系数，保留 TP 宽度和可用组对等拓扑约束。首轮照常生成、评分和训练。允许迁移且出现可行组对时，标定策略尝试一次真实交接，采到基础费用后停止探测。某类动作缺样本时，模型可用本作业已观测的粗粒度耗时估算。",
-                 ("scheduler/calibration.py","calibration_round","Measure one real")),
+                ("在首轮训练中测量", "标准 SGLang 策略启动时清除旧作业的时间系数，保留 TP 宽度和可用组对等拓扑约束。首轮照常生成、评分和训练。允许迁移且出现可行组对时，标定策略尝试一次真实交接，首轮未取得回执时，后续轮次遇到可行组对再补测，采到基础费用后停止探测。某类动作缺样本时，模型可用本作业已观测的粗粒度耗时估算。",
+                 ("scheduler/calibration.py","calibration_round","if candidates:")),
                 ("按物理副本计费", "同一个卡组可运行多个窄 TP 副本。模型在各副本内按 KV 页容量切分窗口，计入冷输入和累计上下文，再取最慢副本的完成时刻。若观测中的 decode 段总是跑满 quantum，固定启动成本与逐步成本无法单独辨识，拟合时将这部分归入每步，防止严重高估很短的尾段。",
                  ("tools/worker_costs.py","fit_decode","inseparable")),
                 ("区分等待和实际传输", "离线发布模型对齐所有参与组到达 collective 的时刻，将各组本地准备与一次共享传输拆开。真机首轮标定路径直接观测全部组通过发布屏障的墙钟时间。异构教师的 CPU 准备若与旧角色卸载重叠，租约模型只把交接后仍需等待的部分计入。",

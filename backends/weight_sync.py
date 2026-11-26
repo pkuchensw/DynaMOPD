@@ -108,6 +108,22 @@ class TensorPublisher:
             for file in sorted(Path(folder).glob("*.safetensors")):
                 with safe_open(file, framework="pt", device="cpu") as reader:
                     tensors.update((key, reader.get_tensor(key)) for key in reader.keys())
+            missing = {m.name for bucket in self.buckets for m in bucket} - tensors.keys()
+            if missing:
+                # HF safetensors can store just one member of a tied group. Use the
+                # teacher's architecture and config, even when the saved alias is reversed.
+                from transformers import AutoConfig, AutoModelForCausalLM
+                config = AutoConfig.from_pretrained(folder, local_files_only=True)
+                with torch.device("meta"):
+                    teacher_model = AutoModelForCausalLM.from_config(config)
+                aliases = {}
+                for name, param in teacher_model.named_parameters(remove_duplicate=False):
+                    aliases.setdefault(id(param), []).append(name)
+                for names in aliases.values():
+                    saved = next((name for name in names if name in tensors), None)
+                    if saved is not None:
+                        for name in missing.intersection(names):
+                            tensors[name] = tensors[saved]
             for bucket in self.buckets:
                 for m in bucket:
                     if m.name not in tensors or tensors[m.name].shape != m.shape:

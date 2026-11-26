@@ -9,9 +9,11 @@ import tempfile
 
 
 class TeacherImage:
-    def __init__(self, state_dir, model, width, device_type):
-        # stage_models creates an immutable, source-fingerprinted model directory.
-        identity = dict(source=str(Path(model).resolve()), tp=width, dtype="bfloat16",
+    def __init__(self, state_dir, model, width, device_type, *, source_id=None):
+        # Ray can stage the same immutable source under a different temporary parent per actor.
+        # The staged basename includes the source fingerprint. Keep the original native cache key.
+        source = Path(state_dir) / "initial_models" / source_id if source_id else Path(model)
+        identity = dict(source=str(source.resolve()), tp=width, dtype="bfloat16",
                         device=device_type, format=1,
                         packages={k: version(k) for k in ("sglang", "torch", "transformers")})
         digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()

@@ -197,6 +197,10 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
                                        weight_decay=cfg.get("weight_decay",0.),adam_betas="(0.9,0.999)"))
             cmd = replace_flags(cmd, dict(kd_loss_fn="verl_k1", kd_algorithm="verl_k1"))
         else:
+            from DynaMOPD.tools.baselines.verl_metrics import install
+            work = state/system/"native-metrics"
+            verl_metric_digest = install(repo, work)
+            env["PYTHONPATH"] = f"{work}:{env['PYTHONPATH']}"
             replicas=parallel["teacher_replicas"]
             actor_gpus = parallel["rollout_replicas"] * tp
             teacher_gpus = replicas * tp
@@ -241,6 +245,7 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
                 overrides = {engine+"engine_kwargs.sglang."+key: value for key,value in engine_options.items()
                              if key not in ("max_running_requests","context_length","dtype")}
                 cmd = replace_hydra(cmd, overrides)
+            cmd = replace_hydra(cmd, {"++ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH": json.dumps(env["PYTHONPATH"])})
             if verl_keep_optimizer:
                 cmd = replace_hydra(cmd, {"actor_rollout_ref.actor.fsdp_config.optimizer_offload":"false"})
     check_command(cfg, system, cmd)
@@ -272,6 +277,8 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
     if system == "kdflow":
         meta.update(cwd=str(work), algorithm="verl_k1", adapter_files=overlay_files,
                     synchronous_teacher=synchronous_teacher, keep_optimizer=keep_optimizer)
+    if system == "verl":
+        meta.update(cwd=str(work), actor_metric_source_sha256=verl_metric_digest)
     manifest = target/"run.json"
     pending = manifest.with_suffix(".tmp")
     pending.write_text(json.dumps(meta, indent=2))

@@ -31,7 +31,7 @@ def sglang_args(cfg, width, name, model, initial_version):
     if name == "rollout" and cfg.get("qwen2_dynamic_rope", False):
         from .qwen2_rope import LOADER
         args += ["--custom-weight-loader", LOADER]
-    if name == "rollout" or (limits and cfg.get("rollout_sampling_mode") == "batch_invariant"):
+    if name == "rollout" or cfg.get("rollout_sampling_mode", "batch_invariant") == "batch_invariant":
         args += ["--enable-deterministic-inference"]
     if name=="rollout" and cfg.get("cuda_graph", False):
         args += ["--cuda-graph-max-bs", str(limits.get("cuda_graph_max_bs", max(8,cfg["decode_batch"])))]

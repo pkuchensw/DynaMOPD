@@ -41,4 +41,4 @@ packages = [
 
 [tool.setuptools.package-data]
 DynaMOPD = ["NOTICE", "configs/*.json", "data/native-smoke.jsonl", "data/smoke.jsonl", "launch.sh", "examples/*.sh", "licenses/*.txt", "licenses/*.md"]
-"DynaMOPD.tools" = ["scenario_timeline.template.html", "timeline.html"]
+"DynaMOPD.tools" = ["paper_report.template.html", "scenario_timeline.template.html", "timeline.html"]

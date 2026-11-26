@@ -12,6 +12,19 @@ from DynaMOPD.cluster.topology import visible_devices
 from DynaMOPD.tools.quality import model_paths
 
 
+def validate_vocabularies(reference, paths, rows):
+    from transformers import AutoTokenizer
+    vocab = AutoTokenizer.from_pretrained(reference, local_files_only=True).get_vocab()
+    valid = set(vocab.values())
+    for index, row in enumerate(rows):
+        if not set(row["prompt"] + row["response"]) <= valid:
+            raise ValueError(f"held-out prefix {index} contains IDs outside the source tokenizer")
+    for path in set(paths) - {Path(reference).resolve()}:
+        other = AutoTokenizer.from_pretrained(path, local_files_only=True).get_vocab()
+        if other != vocab:
+            raise ValueError(f"fixed-prefix KL requires identical token-to-ID mappings: {reference} and {path}")
+
+
 def extract(path, rows, output):
     import torch
     from transformers import AutoModelForCausalLM
@@ -63,6 +76,7 @@ def main():
         selected = rows if key in students else [r for r in rows if teacher_keys[r["teacher"]]==key]
         extract(paths[key],selected,args.scratch/f"{key}.pt")
         return
+    validate_vocabularies(cfg["student"], paths.values(), rows)
     devices = visible_devices()
     if not devices:
         raise ValueError("prefix evaluation needs a visible GPU")

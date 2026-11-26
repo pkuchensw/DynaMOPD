@@ -1,7 +1,6 @@
 """One job namespace, one controller and one optimizer commit per round."""
 from contextlib import ExitStack, closing, nullcontext
 from dataclasses import asdict
-import fcntl
 import json
 import logging
 import math
@@ -38,6 +37,7 @@ def fit(config: dict, *, output, data_path=None, state_dir=None, simulate=False,
             if simulate:
                 data = simulated_inputs(cfg)
             else:
+                import fcntl
                 state.mkdir(parents=True, exist_ok=True)
                 lock = stack.enter_context((state/".controller.lock").open("a"))
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

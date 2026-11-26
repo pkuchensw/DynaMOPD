@@ -23,10 +23,11 @@ class AdaptivePolicy:
         self.elastic_tp = elastic_tp
 
     def plan(self, s: PlanningState):
-        if s.cost.measuring and not s.cfg.get("sim_worker_profile"):
+        if s.cost.measuring and (not s.cfg.get("sim_worker_profile") or
+                                 (self.allow_merge and "move_base" not in s.cost.values)):
             from .calibration import calibration_round
-            yield from calibration_round(s, self.allow_merge, True, True)
-            return
+            if (yield from calibration_round(s, self.allow_merge, True, True)):
+                return
         cfg, v = s.cfg, s.version
         active = defaultdict(list)
         for row in s.rows.values():

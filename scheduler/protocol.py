@@ -161,5 +161,5 @@ class Costs:
         return max(0., y-slope*x), slope
 
     def observe(self, name, value):
-        if math.isfinite(value) and value > 0:
+        if math.isfinite(value) and (value > 0 or (name == "move_base" and value == 0)):
             self.values[name] = .7 * self.values.get(name, value) + .3 * value

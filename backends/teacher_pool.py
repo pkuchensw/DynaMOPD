@@ -197,7 +197,8 @@ class TeacherRanks:
             config = json.loads((Path(model) / "config.json").read_text())
             # The validated layout here is the dense unquantized Qwen2 scorer.
             supported = config.get("architectures") == ["Qwen2ForCausalLM"] and not config.get("quantization_config")
-            self.images[model] = TeacherImage(self.cfg["state_dir"], model, self.width, self.device_type) if supported else None
+            self.images[model] = (TeacherImage(self.cfg["state_dir"], model, self.width, self.device_type,
+                                               source_id=Path(model).name) if supported else None)
         return self.images[model]
 
     def save_lane(self, directory):

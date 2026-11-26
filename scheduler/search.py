@@ -300,8 +300,6 @@ class Forecast:
         return base + (0. if deferred else a + b*tokens) + self.s.transfer_penalty(src, dst)
 
     def pairs(self):
-        if self.s.cost.measuring and "move_base" not in self.s.cost.values:
-            return
         s = self.s
         for src, rows in enumerate(self.live):
             if not rows or any(not r.tokens and r.rid not in self.inflight_tokens for r in rows):
@@ -721,10 +719,11 @@ class CostSearchPolicy:
     def plan(self, s):
         if all(g.busy for g in s.groups):
             return
-        if s.cost.measuring and not s.cfg.get("sim_worker_profile"):
+        missing_move = s.cost.measuring and "move_base" not in s.cost.values
+        if s.cost.measuring and (not s.cfg.get("sim_worker_profile") or (self.max_pairs and missing_move)):
             from .calibration import calibration_round
-            yield from calibration_round(s, self.max_pairs > 0, self.early_training, self.live_prefix_scoring)
-            return
+            if (yield from calibration_round(s, self.max_pairs > 0, self.early_training, self.live_prefix_scoring)):
+                return
         started = perf_counter()
         if self.classes is None:
             self.classes = engine_classes(s.cfg)
@@ -754,6 +753,7 @@ class CostSearchPolicy:
                 split = min(s.cfg["microbatch"], (ready+idle_trainers-1)//idle_trainers)
                 sizes = sorted(set(sizes) | {split})
         holding = next(iter(s.holds.items()), None)
+        pairs = list(f.pairs()) if self.max_pairs and not missing_move else []
         if s.cost.measuring and not holding:
             # Bound placement alternatives as the number of groups grows. Rank
             # both the displaced work and the destination's remaining decode.
@@ -762,9 +762,9 @@ class CostSearchPolicy:
                 return (f.move_cost(src,dst) + max(f.available[src],f.available[dst])
                         + f.step * (max(f.left[r.rid] for r in f.live[dst])
                                     - max(f.left[r.rid] for r in f.live[src])))
-            pairs = sorted(f.pairs(),key=merge_rank)[:min(self.max_pairs,isqrt(len(s.groups)))]
+            pairs = sorted(pairs,key=merge_rank)[:min(self.max_pairs,isqrt(len(s.groups)))]
         else:
-            pairs = sorted(f.pairs(),key=lambda p:f.move_cost(*p))[:self.max_pairs]
+            pairs = sorted(pairs,key=lambda p:f.move_cost(*p))[:self.max_pairs]
         if holding:
             pairs = [holding] if holding in f.pairs() else []
         idle = [g.gpu for g in s.groups if not g.busy]

@@ -20,6 +20,8 @@ def collect(folder):
     job = folder/"dynamopd"
     stats = summarize(folder,training_only=True,systems=["dynamopd"])["dynamopd"]
     trace = events(job/"events.jsonl")
+    config = read(folder/"config.json")
+    base_tp = config.get("inference_tp_size", config.get("group_size"))
     rounds = []
     for v,duration in enumerate(stats["round_s"]):
         step = [e for e in trace if e.get("version")==v]
@@ -39,7 +41,17 @@ def collect(folder):
                 if op=="tp_expand":
                     expansions.append(dict(rid=d["ids"][0], position=positions[d["ids"][0]], **e))
                 if op=="decode":
-                    chunk = dict(ids=d["ids"],width=e["inference_tp_size"],s=e["end"]-e["start"],end=e["end"],tokens=0)
+                    width = e.get("inference_tp_size", e.get("tp_width"))
+                    if "peer" in d or "peer" in e:
+                        is_wide = d.get("peer", e.get("peer")) is not None
+                    elif width is not None and base_tp is not None:
+                        is_wide = width > base_tp
+                    else:
+                        raise ValueError("decode trace has neither a TP lease nor an identifiable base width")
+                    if is_wide and len(d["ids"]) != 1:
+                        raise ValueError("wide decode receipt must belong to a single tail request")
+                    chunk = dict(ids=d["ids"], wide=is_wide, width=width,
+                                 s=e["end"]-e["start"], end=e["end"], tokens=0)
                     if len(d["ids"])==1:
                         rid, = d["ids"]
                         chunk.update(rid=rid,position=positions[rid])
@@ -48,7 +60,7 @@ def collect(folder):
                 assert e["rid"] in chunks[-1]["ids"] and positions[e["rid"]] == e["start"]
                 chunks[-1]["tokens"] += e["end"]-e["start"]
                 positions[e["rid"]] = e["end"]
-        wide = [c for c in chunks if c["width"]>1]
+        wide = [c for c in chunks if c["wide"]]
         for receipt in expansions:
             if receipt.get("accepted"):
                 first = next((c for c in wide if c["rid"]==receipt["rid"] and c["position"]==receipt["position"]
@@ -86,8 +98,8 @@ def compare(off,on):
             raise ValueError(f"benchmark manifest mismatch for {field}")
     pairs = []
     for small,large in zip(base["steps"],wide["steps"],strict=True):
-        lookup = {(c["rid"],c["position"]):c for c in small["single_chunks"]}
-        matched = [(c,lookup.get((c["rid"],c["position"]))) for c in large["single_chunks"] if c["width"]>1]
+        lookup = {(c["rid"],c["position"]):c for c in small["single_chunks"] if not c["wide"]}
+        matched = [(c,lookup.get((c["rid"],c["position"]))) for c in large["single_chunks"] if c["wide"]]
         matched = [(a,b) for a,b in matched if b and b["tokens"]==a["tokens"]]
         if not matched:
             continue

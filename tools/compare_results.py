@@ -129,7 +129,12 @@ def summarize(folder, *, training_only=False, systems=None):
                             f"actor_rollout_ref.actor.ppo_mini_batch_size={batch}"}
                 if not required <= cmd:
                     raise ValueError("native verl job uses a different distillation recipe")
-                entry["effective_training_tokens"] = totals
+                # Measured on the exact loss mask submitted to the completed native actor update.
+                # Historical logs without this independent observation cannot certify full coverage.
+                counts = [metric(line, "actor/effective_training_tokens") for line in lines]
+                if any(not n.is_integer() or n < 0 for n in counts):
+                    raise ValueError("invalid verl actor mask token count")
+                entry["effective_training_tokens"] = [int(n) for n in counts]
             if entry["effective_training_tokens"] != totals:
                 raise ValueError(f"{system} did not train every generated response token")
             entry["full_rendered_prompts_verified"] = True

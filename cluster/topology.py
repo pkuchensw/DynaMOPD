@@ -120,7 +120,7 @@ def describe_layout(cfg):
     plan = allocations(cfg)
     nodes = requested_nodes(cfg)
     placements = [GroupPlacement(g, node, ()) for g, node in enumerate(nodes)]
-    profile = TailProfile(cfg, placements) if cfg.get("rollout_tp_expansion") else None
+    profile = TailProfile(dict(cfg, first_round_calibration=True), placements) if cfg.get("rollout_tp_expansion") else None
     return dict(nodes=len(plan), groups=groups, gpus=groups * width,
                 inference_tp_size=tp, rollout_replicas=groups * (width // tp),
                 fsdp_group_size=width, standby_pairs=profile.pairs if profile else [],
