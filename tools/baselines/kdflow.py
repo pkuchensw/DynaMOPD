@@ -29,6 +29,18 @@ def install(repo, work, *, synchronous_teacher=False, keep_optimizer=False, engi
                           if x.shape[-1] < width else x for x in pieces], dim=0)"""))
     processor = package / "trainer/data_processor/rollout_data_processor.py"
     body = processor.read_text()
+    for original, replacement in (
+        ("self._save_rollout_data(stu_prompts, outputs, labels, global_step, mode)",
+         "self._save_rollout_data(stu_prompts, outputs, labels, global_step, mode, teacher_routing_keys)"),
+        ('    ) -> None:\n        rollout_dir =', '        teacher_routing_keys=None,\n    ) -> None:\n        rollout_dir ='),
+        ('for prompt, output, label in zip(prompts, outputs, labels):',
+         'routes = [None] * len(outputs) if teacher_routing_keys is None else teacher_routing_keys\n'
+         '            for prompt, output, label, route in zip(prompts, outputs, labels, routes, strict=True):'),
+        ('{"prompt": prompt, "output": output["text"]}', '{"prompt": prompt, "output": output["text"], "teacher_routing_key": route}'),
+    ):
+        if body.count(original) != 1:
+            raise ValueError("unsupported KDFlow rollout dump for teacher-route verification")
+        body = body.replace(original, replacement)
     # The matched models share token IDs. Send the originally sampled student
     # prompt and response to every teacher, including length-limited samples.
     start = body.index("        teacher_processor = self._get_teacher_processor(teacher_routing_key)", body.index("    def _build_rollout_sample("))

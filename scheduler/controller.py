@@ -87,6 +87,7 @@ class Controller:
         self.emit("dispatch", decision_id=self.decision_id,gpu=a.gpu, peer=a.peer, op=a.kind,
                   role=self.groups[a.gpu].role, next_role=a.payload.get("role"),
                   load_version=a.payload.get("load_version"),
+                  **({"steps": a.payload["steps"]} if a.kind == "decode" else {}),
                   ids=[x["rid"] for x in a.payload.get("items", [])])
         self.backend.submit(a)
 

@@ -3,7 +3,7 @@ import gc
 import copy
 import hashlib
 import json
-import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -11,6 +11,7 @@ import torch
 from transformers import AutoModelForCausalLM, DynamicCache
 
 from ...algorithms import TokenBatch, build_algorithm
+from ...trainer.data import validate_sampled_ids
 
 
 def selected_logp(logits, ids, temperature):
@@ -85,6 +86,7 @@ class Worker:
         self.generators = {}
         self.grad_tokens = 0
         self.temperature = cfg["temperature"]
+        self.excluded_ids = set(cfg["excluded_ids"])
         self.excluded = None
         self.templates = {}
         if cfg.get("stage_host_weights", True):
@@ -99,6 +101,10 @@ class Worker:
         for param in model.parameters():
             param.data = param.detach().clone()
         return model
+
+    @property
+    def full_head_k1(self):
+        return self.cfg.get("algorithm", "on_policy_k1") == "on_policy_k1"
 
     def replica(self, path):
         template = self.templates.get(str(path))
@@ -190,7 +196,8 @@ class Worker:
         last = torch.stack([h[-1] for h in hidden])
         for step in range(p["steps"]):
             logits = self.model.lm_head(last).float() / self.temperature
-            logits.index_fill_(-1, self.excluded, -torch.inf)
+            if not self.full_head_k1:
+                logits.index_fill_(-1, self.excluded, -torch.inf)
             lp = logits.log_softmax(-1)
             chosen = torch.zeros(len(items), dtype=torch.long, device=self.device)
             for i, x in enumerate(items):
@@ -221,6 +228,9 @@ class Worker:
             last = output.last_hidden_state[:, -1]
         layers = list(packed)
         for i, x in enumerate(items):
+            if self.full_head_k1:
+                validate_sampled_ids(updates[x["rid"]]["tokens"], x["rid"], x["teacher"],
+                                     self.cfg.get("sampled_id_limits"), self.excluded_ids)
             if not updates[x["rid"]]["finish"]:
                 self.cache[x["rid"]] = unpack_row(layers, i, mask)
         return {"updates": updates}
@@ -241,7 +251,7 @@ class Worker:
         result = {}
         for i, x in enumerate(p["items"]):
             target = torch.tensor(x["tokens"][x["start"]:], device=self.device)
-            scores = self.logprobs(hidden[i][offsets[i]:], target)
+            scores = self.logprobs(hidden[i][offsets[i]:], target, teacher=True)
             rid = x["rid"]
             if not x["final"]:
                 self.cache[rid] = next_cache[i]
@@ -254,13 +264,15 @@ class Worker:
             del self.cache[victim]
         return {"scores": result, "evicted": dropped}
 
-    def logprobs(self, hidden, target):
+    def logprobs(self, hidden, target, *, teacher=False):
         width = self.cfg.get("head_chunk", 64)
         parts = []
+        temperature = 1. if teacher and self.full_head_k1 else self.temperature
         for i in range(0, len(target), width):
             logits = self.model.lm_head(hidden[i:i+width]).float()
-            logits.index_fill_(-1, self.excluded, -torch.inf)
-            parts.append(selected_logp(logits, target[i:i+width], self.temperature))
+            if not self.full_head_k1:
+                logits.index_fill_(-1, self.excluded, -torch.inf)
+            parts.append(selected_logp(logits, target[i:i+width], temperature))
         return torch.cat(parts)
 
     def train(self, p):
@@ -312,14 +324,15 @@ class Worker:
             delta = max(delta, (updated-weight.detach()).abs().max().item())
             weight.data.copy_(updated)
         path = self.version_path(self.version+1)
-        staging = path.with_suffix(".partial")
-        staging.mkdir()
-        if "scheduler_state" in p:
-            (staging / "scheduler.json").write_text(json.dumps(p["scheduler_state"], allow_nan=False))
-        self.model.save_pretrained(staging)
-        torch.save(dict(master=[w.detach() for w in self.master], optimizer=self.optimizer.state_dict()),
-                   staging / "adam.pt")
-        os.rename(staging, path)
+        with tempfile.TemporaryDirectory(dir=path.parent, prefix=f".{path.name}-") as scratch:
+            staging = Path(scratch) / "checkpoint"
+            staging.mkdir()
+            if "scheduler_state" in p:
+                (staging / "scheduler.json").write_text(json.dumps(p["scheduler_state"], allow_nan=False))
+            self.model.save_pretrained(staging)
+            torch.save(dict(master=[w.detach() for w in self.master], optimizer=self.optimizer.state_dict()),
+                       staging / "adam.pt")
+            staging.rename(path)
         self.grad_tokens = 0
         self.master = []
         self.optimizer = None

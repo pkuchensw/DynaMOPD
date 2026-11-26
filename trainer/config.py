@@ -66,7 +66,7 @@ def build_job(config, *, simulate, replay, resume_version):
     """Resolve defaults on a private config before persistent state or workers are created."""
     cfg = deepcopy(config)
     resolve_model_paths(cfg)
-    sizes = ("rounds", "groups", "batch_size", "quantum", "score_chunk", "microbatch", "decode_batch", "score_batch")
+    sizes = ("rounds", "groups", "batch_size", "quantum", "score_chunk", "microbatch", "train_budget", "decode_batch", "score_batch")
     if any(type(cfg.get(k)) is not int or cfg[k] < 1 for k in sizes):
         raise ValueError("round and batch limits must be positive")
     if (cfg["batch_size"] < cfg["groups"]
@@ -86,7 +86,7 @@ def build_job(config, *, simulate, replay, resume_version):
         # Timing parameters belong to this invocation's allocation.
         cfg["costs"] = {}
         cfg.pop("tail_prior", None)
-        for key in ("sim_worker_profile", "sim_decode_roofline", "sim_rpc_overhead_s", "sim_teacher_prepare_s",
+        for key in ("sim_worker_profile", "sim_decode_roofline", "sim_rpc_overhead_s", "sim_short_score_s", "sim_teacher_prepare_s",
                     "sim_teacher_release_s", "sim_teacher_activation_s", "sim_engine_classes"):
             cfg.pop(key, None)
         if cfg.get("rollout_tp_expansion"):

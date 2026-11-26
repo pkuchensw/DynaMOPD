@@ -10,6 +10,7 @@ from math import isqrt
 from time import perf_counter
 
 from .protocol import Action
+from .batching import training_waves
 from ..backends.score_cache import trim_score_cache
 from ..backends.sim_profile import (SwitchState, decode_duration, decode_features, decode_roofline, decode_windows, rpc_decode_features,
                                     engine_classes, fitted_switch, train_seconds, teacher_lease_window)
@@ -242,18 +243,17 @@ class Forecast:
     def switch(self, *args, **kwargs):
         return self.transition(*args, **kwargs)[0]
 
-    def train(self, lengths):
+    def train(self, lengths, wave_widths=None):
         if "train" in self.profile:
-            return train_seconds(self.cfg, lengths)
+            return train_seconds(self.cfg, lengths, wave_widths)
         return sum(lengths) * self.s.cost.get("train_token")
 
     def train_batches(self, ordered, batch_size):
         key = batch_size, tuple(ordered)
         if key not in self.batch_cache:
             widths = self.train_widths.__getitem__
-            groups = batches(ordered, batch_size, self.cfg["train_budget"], widths,
-                             self.cfg.get("trainer_attention") == "flash_attention_2")
-            self.batch_cache[key] = [(ids, self.train(list(map(widths, ids)))) for ids in groups]
+            groups = training_waves(ordered, self.cfg, widths, batch_size, forecast=True)
+            self.batch_cache[key] = [(ids, self.train(list(map(widths, ids)), [max(loads)])) for ids, _, loads in groups]
         return self.batch_cache[key]
 
     def lane(self, row):

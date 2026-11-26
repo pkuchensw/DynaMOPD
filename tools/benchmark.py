@@ -14,7 +14,8 @@ import time
 from DynaMOPD.cluster.topology import visible_devices
 from DynaMOPD.trainer.config import resolve_model_paths
 from DynaMOPD.trainer.data import load_data
-from DynaMOPD.tools.benchmark_layout import benchmark_nodes, check_command, check_layouts, verl_update_options
+from DynaMOPD.tools.benchmark_data import check_rows, prompt_key, training_input
+from DynaMOPD.tools.benchmark_layout import benchmark_nodes, check_command, check_layouts, check_verl_recipe, verl_update_options
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,22 +27,29 @@ def benchmark_profile(path):
     return Path(root).expanduser().resolve()
 
 
-def prepare(out, batch, rounds, cap, devices, group_size=2, systems=("dynamopd","kdflow"), tp_size=1, *, profile_root=None):
+def prepare(out, batch, rounds, cap, devices, group_size=2, systems=("dynamopd","kdflow"), tp_size=1, *,
+            profile_root=None, train_tokens_per_gpu=12288):
     import pyarrow.parquet as pq
     data = benchmark_profile(profile_root)/"data"
+    if train_tokens_per_gpu < 1:
+        raise ValueError("train_tokens_per_gpu must be positive")
     records = load_data(data/"dapo.jsonl")
     training = records[:batch*rounds]
     table = pq.read_table(data/"dapo.parquet").slice(0,len(training))
     if len(training) != batch*rounds:
         raise ValueError("the dataset has too few distinct rows for the requested steps")
-    if [x["prompt"] for x in training] != table.column("prompt").to_pylist():
-        raise ValueError("KDFlow and verl baseline prompt order differs")
+    teachers = json.loads((data/"teachers.json").read_text())
+    check_rows(training, table.to_pylist(), teachers)
+    evaluation = load_data(data/"pilot.jsonl")[:32]
+    train_prompts = {prompt_key(x["prompt"]) for x in training}
+    if len(evaluation) != 32 or any(prompt_key(x["prompt"]) in train_prompts for x in evaluation):
+        raise ValueError("expected 32 held-out prompts disjoint from training")
     cfg = json.loads((ROOT/"configs/sglang-tp1-fsdp2-8xh20.json").read_text())
     groups = len(devices)//group_size
-    cfg.update(algorithm="on_policy_k1", teachers=json.loads((data/"teachers.json").read_text()), batch_size=batch, rounds=rounds,
+    cfg.update(algorithm="on_policy_k1", teachers=teachers, route_field="teacher_routing_key", batch_size=batch, rounds=rounds,
                groups=groups, group_size=group_size, benchmark_devices=devices, decode_batch=batch//groups*3//2,
                inference_tp_size=tp_size, max_train_groups=groups, verl_teacher_gpus=len(devices)//2,
-               mem_fraction_static=.45, microbatch=8*group_size, train_budget=12288*group_size,
+               mem_fraction_static=.45, microbatch=8*group_size, train_budget=train_tokens_per_gpu*group_size,
                kdflow_keep_optimizer=True, kdflow_synchronous_teacher=True,
                max_prompt=2048, max_new_tokens=cap, seed=42, lr=1e-6, tail_prior=640,
                checkpoint_interval=rounds, checkpoint_contents=["hf_model"], hf_checkpoint_dtype="float32",
@@ -57,9 +65,6 @@ def prepare(out, batch, rounds, cap, devices, group_size=2, systems=("dynamopd",
     out.mkdir(parents=True,exist_ok=False)
     (out/"train.jsonl").write_text("".join(json.dumps(x)+"\n" for x in training))
     pq.write_table(table,out/"train.parquet")
-    evaluation = load_data(data/"pilot.jsonl")[:32]
-    train_prompts = {str(x["prompt"]) for x in training}
-    assert len(evaluation)==32 and all(str(x["prompt"]) not in train_prompts for x in evaluation)
     (out/"heldout.jsonl").write_text("".join(json.dumps(x)+"\n" for x in evaluation))
     (out/"config.json").write_text(json.dumps(cfg,indent=2))
 
@@ -112,6 +117,12 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
     engine_options = dict(limits, context_length=prompt+cap+1, max_total_tokens=cfg["engine_kv_tokens"],
                           attention_backend="triton", dtype="bfloat16", enable_deterministic_inference=True, disable_piecewise_cuda_graph=True)
     label = cfg.get("dynamopd_run","dynamopd") if system=="dynamopd" else system
+    if system != "dynamopd":
+        command_file = Path(command_file) if command_file else profile/"results"/f"{system}_dapo_1"/"run.json"
+        base = json.loads(command_file.read_text())["command"]
+        if system == "verl":
+            base = replace_hydra(base, verl_update_options(batch))
+            check_verl_recipe(base, batch)
     target = out/label
     target.mkdir()
     (state/label).mkdir(parents=True)
@@ -153,8 +164,6 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
             profile_hook = profile/"sitecustomize.py"
             if profile_hook.is_file():
                 env["DYNAMOPD_PROFILE_SITECUSTOMIZE"] = str(profile_hook)
-        command_file = Path(command_file) if command_file else profile/"results"/f"{system}_dapo_1"/"run.json"
-        base = json.loads(command_file.read_text())["command"]
         if system=="kdflow":
             from DynaMOPD.tools.baselines.kdflow import install
             import torch
@@ -222,7 +231,7 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
                         "actor_rollout_ref.actor.fsdp_config.seed":cfg["seed"],
                         "actor_rollout_ref.rollout.seed":cfg["seed"],"data.max_prompt_length":prompt,
                         "data.val_files":out/"train.parquet","data.max_response_length":cap,"data.shuffle":"false",
-                        **verl_update_options(batch), "actor_rollout_ref.rollout.temperature":cfg["temperature"],
+                        "actor_rollout_ref.rollout.temperature":cfg["temperature"],
                         "actor_rollout_ref.rollout.top_p":1.,"actor_rollout_ref.rollout.max_model_len":prompt+cap+1,
                         "trainer.total_training_steps":rounds,"trainer.default_local_dir":state/system/"checkpoint",
                         "trainer.save_freq":rounds,"actor_rollout_ref.actor.checkpoint.save_contents":"[hf_model]",
@@ -254,6 +263,7 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
         meta.update(nodes=nodes, total_gpus=nodes*n_gpus, cluster=cfg["cluster"])
     meta["config_sha256"] = hashlib.sha256(json.dumps(cfg,sort_keys=True).encode()).hexdigest()
     meta["dataset_sha256"] = hashlib.sha256((out/"train.jsonl").read_bytes()).hexdigest()
+    meta["training_input"] = training_input(out, system, cmd, load_data(out/"train.jsonl"), cfg, at_launch=True)
     if system == "dynamopd":
         source = hashlib.sha256()
         for path in sorted(ROOT.rglob("*.py")):
@@ -305,6 +315,7 @@ def main():
     p.add_argument("--verl-keep-optimizer",action="store_true",
                    help="keep native verl Adam states on GPU across rollout and training")
     p.add_argument("--batch",type=int,default=512)
+    p.add_argument("--train-tokens-per-gpu", type=int, default=12288, help="shared per-rank training token budget")
     p.add_argument("--rounds",type=int,default=6)
     p.add_argument("--cap",type=int,default=8192)
     p.add_argument("--devices", help="comma-separated physical indices; defaults to the visible GPUs at prepare")
@@ -327,7 +338,8 @@ def main():
             p.error("native KDFlow microbatch 8 requires a batch divisible by 8 x number of GPUs")
         if len(devices)%a.group_size:
             p.error("the benchmark requires complete GPU groups")
-        prepare(out,a.batch,a.rounds,a.cap,devices,a.group_size,list(dict.fromkeys(a.systems)),a.tp_size, profile_root=a.profile_root)
+        prepare(out,a.batch,a.rounds,a.cap,devices,a.group_size,list(dict.fromkeys(a.systems)),a.tp_size,
+                profile_root=a.profile_root, train_tokens_per_gpu=a.train_tokens_per_gpu)
     else:
         if a.verl_keep_optimizer and a.stage != "verl":
             p.error("--verl-keep-optimizer is only valid for the native verl run")

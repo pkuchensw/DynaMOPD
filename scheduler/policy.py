@@ -2,6 +2,7 @@
 from collections import defaultdict
 
 from .protocol import Action
+from .batching import training_waves
 from .base import PlanningState
 from ..components import resolve
 
@@ -157,20 +158,9 @@ class AdaptivePolicy:
                                 for r in s.rows.values())
             if phase_barriers and needs_service:
                 ready = []
-            batch, width, tokens = [], 0, 0
-            packed = cfg.get("trainer_attention") == "flash_attention_2"
-            for row in ready:
-                length = len(row.prompt) + len(row.tokens)
-                new_width = max(width, length)
-                cost = tokens + length if packed else new_width * (len(batch) + 1)
-                if batch and cost > cfg["train_budget"]:
-                    continue
-                batch.append({"rid": row.rid})
-                width = new_width
-                tokens += length
-                if len(batch) == cfg["microbatch"]:
-                    break
-            backward_time = s.cost.get("train_token") * (tokens if packed else width * len(batch))
+            rows, _, loads = next(training_waves(ready, cfg, lambda r: len(r.prompt)+len(r.tokens)), ([], [], []))
+            batch = [{"rid": row.rid} for row in rows]
+            backward_time = s.cost.get("train_token") * sum(loads)
             for g in idle:
                 if g.gpu not in replicas:
                     options.extend(scoring_options(g))

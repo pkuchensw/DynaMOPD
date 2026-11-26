@@ -2,9 +2,11 @@
 from .protocol import Action
 
 
-def deferred_service(s, groups, horizon, scoring, training):
+def deferred_service(s, groups, horizon, scoring, training, now=None):
     """Approximate queued work left uncovered during the predicted decode window."""
     available = {}
+    if now is None:
+        now = s.now()
     for g in groups:
         busy = g.busy
         cost = 0.
@@ -17,7 +19,9 @@ def deferred_service(s, groups, horizon, scoring, training):
             elif busy.kind == "switch":
                 cost = s.cost.switch(g.role, busy.payload["role"])
             else:
-                cost = horizon
+                available[g.gpu] = 0.
+                continue
+            cost = max(0., cost - max(0., now - g.busy_since))
         available[g.gpu] = max(0., horizon - cost)
     trainer = s.trainer if s.trainer is not None else s.required_trainer
     if trainer is None and training and available:
@@ -81,8 +85,9 @@ def pair_action(s, rows, leader, peer, *, lookahead=False):
     score_s = (pending + remaining) * s.cost.get("score_token")
     train_s = sum(len(r.prompt)+len(r.tokens) for r in s.rows.values()
                   if r.finish and not (r.discarded or r.training or r.trained)) * s.cost.get("train_token")
-    blocked = max(0., deferred_service(s, other, wide, score_s, train_s)
-                  - deferred_service(s, [*other, donor], wide, score_s, train_s))
+    now = s.now()
+    blocked = max(0., deferred_service(s, other, wide, score_s, train_s, now)
+                  - deferred_service(s, [*other, donor], wide, score_s, train_s, now))
     lost_kv = sum(len(r.prompt)+r.kv[peer]-1 for r in s.rows.values()
                   if not pair and peer in r.kv and not r.discarded and (not r.finish or len(r.labels)<len(r.tokens)))
     reprefill = (0 if preserved else lost_kv) * s.cost.get("prefill_token")

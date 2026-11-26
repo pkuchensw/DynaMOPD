@@ -393,7 +393,9 @@ class GroupWorker:
         if op == "train":
             stats = self.collective(op,p,version)
             return dict(tokens=sum(x["tokens"] for x in stats), loss_sum=sum(x["loss_sum"] for x in stats),
-                        max_logp_error=max(x["max_logp_error"] for x in stats), rank_tokens=[x["tokens"] for x in stats])
+                        max_logp_error=max(x["max_logp_error"] for x in stats), rank_tokens=[x["tokens"] for x in stats],
+                        rank_input_tokens=[x["input_tokens_per_microbatch"] for x in stats],
+                        rank_samples=[x["samples_per_microbatch"] for x in stats])
         if op == "commit":
             return self.collective(op,p,version)[0]
         if op == "export":

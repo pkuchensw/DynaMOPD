@@ -21,7 +21,7 @@ def work_seconds(cfg, profile, point, cache):
         base, slope = profile["score"][point["role"]]
         return base+slope*point["critical_tokens"]
     if point["op"] == "train" and "train" in profile:
-        return train_seconds(cfg, point["lengths"])
+        return train_seconds(cfg, point["lengths"], point["wave_widths"])
     return None
 
 

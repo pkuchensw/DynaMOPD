@@ -233,6 +233,12 @@ python -m DynaMOPD.run --simulate --policy elastic_tp --sim-tp-profile "$profile
 
 严格 K1 对照固定 verl 的 `ppo_epochs=1` 和全批次 `ppo_mini_batch_size`，在原生 actor 更新完成后用 `actor/effective_training_tokens` 记录该批 loss mask 的有效 token 数。严格汇总同时核验启动参数与掩码计数。历史记录缺少其中任一项时，原始步时仍可查看，但不足以验证每轮一次全批次更新。固定前缀 KL 会在加载模型前核对各检查点的 token 到 ID 映射。
 
+基准准备逐行核对 JSONL 与 Parquet 的 prompt、`teacher_routing_key` 和教师表。每个 `run.json` 的 `training_input` 记录实际读取的文件及 SHA-256，KDFlow 对应按采样顺序重排后的文件。严格报告同时复核各轮输出中每个 prompt 对应的教师。缺少文件摘要或逐样本路由的旧实验只能提供历史步时。
+
+FSDP2 的 `microbatch` 和 `train_budget` 是组级配置。匹配基准在每卡默认限制 8 条样本、12,288 个训练输入 token。输入长度为 prompt 长度加响应长度减一，SDPA 计入 rank 内 padding。放不下的批次拆为多次同步前反向，轮末仍按整批有效响应 token 归一化并更新一次。单条样本超过一张卡的预算时会报告所需 token 数。长上下文实验可在准备阶段用 `--train-tokens-per-gpu` 对所有参比系统显式设置同一预算。每次训练回执的 `rank_samples` 和 `rank_input_tokens` 按 rank、微批记录实际分配。
+
+原生和 HF 参考后端对 K1 均按模型自己的完整输出头计算 logprob，教师评分使用温度 1。路由教师必须支持采到的 token ID，模型输出头宽度可以不同。
+
 ```bash
 PY=${PYTHON:-python}
 export MOPD_PROFILE_ROOT="${MOPD_PROFILE_ROOT:?set your benchmark profile directory}"

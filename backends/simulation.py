@@ -3,6 +3,7 @@ import heapq
 import random
 import math
 from .score_cache import trim_score_cache
+from ..scheduler.batching import training_waves
 from .sim_profile import (SwitchState, decode_duration, decode_features, decode_roofline, decode_windows, rpc_decode_features, engine_classes,
                           fitted_switch, replay_move_base, train_seconds, teacher_lease_window)
 from itertools import count
@@ -479,7 +480,8 @@ class Simulator:
             managers = self.managers[a.peer]
             limits = [min(cfg.get("engine_kv_tokens", 131072),
                           (m.num_free_blocks + m.num_used_blocks)*m.block_size) for m in managers]
-            accepted = all(need <= cap and sum((n+m.block_size-1)//m.block_size for n in sizes) <= m.num_free_blocks
+            deferred = p.get("rebuild") == "on_decode"
+            accepted = all(need <= cap and (deferred or sum((n+m.block_size-1)//m.block_size for n in sizes) <= m.num_free_blocks)
                            for need, cap, m, sizes in zip(headroom, limits, managers, by_lane, strict=True))
             value = dict(accepted=accepted, ids=[x["rid"] for x in items],
                          required_kv_tokens=sum(headroom), capacity_tokens=sum(limits))
@@ -488,7 +490,6 @@ class Simulator:
             if self.placements[gpu].node != self.placements[a.peer].node:
                 dt += c.get("cross_node_move_s", 0.)
             if accepted:
-                deferred = p.get("rebuild") == "on_decode"
                 for x,n in zip(items, counts, strict=True):
                     if not deferred:
                         self.grow(a.peer, x, n-1, a.version)
@@ -511,10 +512,14 @@ class Simulator:
                              deferred_context_tokens=sum(counts) if deferred else 0,
                              transfer="seed_position_then_decode" if deferred else "seed_position_and_reprefill")
         elif a.kind == "train":
+            lengths = [len(x["prompt"]) + len(x["tokens"]) for x in items]
+            waves = list(training_waves(lengths, cfg, int))
             tokens = sum(len(x["tokens"]) for x in items)
             self.train_tokens[gpu] += tokens
-            dt = train_seconds(cfg, [len(x["prompt"]) + len(x["tokens"]) for x in items])
-            value = dict(tokens=tokens, loss_sum=0.)
+            dt = train_seconds(cfg, lengths, [max(loads) for _, _, loads in waves])
+            value = dict(tokens=tokens, loss_sum=0.,
+                         rank_input_tokens=list(zip(*(loads for _, _, loads in waves))),
+                         rank_samples=list(zip(*([len(rows) for rows in ranks] for _, ranks, _ in waves))))
         elif a.kind == "reduce_grads":
             if (p["counts"] != self.train_tokens or gpu in self.reduced_groups
                     or ((self.train_tokens[gpu] or gpu == p["owner"]) and self.roles[gpu] != "train")):

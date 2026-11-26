@@ -19,6 +19,7 @@ from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy
 from transformers import AutoModelForCausalLM
 
 from ..algorithms import TokenBatch, build_algorithm
+from ..scheduler.batching import training_waves
 from ..utils.fsdp_utils import (
     apply_fsdp2, load_fsdp2_model_to_gpu, load_fsdp_optimizer, offload_fsdp2_model_to_cpu,
 )
@@ -188,16 +189,19 @@ class Shard:
         return logits.float().log_softmax(-1).gather(1, labels[:, None]).flatten()
 
     def train(self, items):
-        if self.attention == "flash_attention_2":
-            loads = [0] * self.world
-            part = []
-            for x in sorted(items, key=lambda row: len(row["prompt"])+len(row["tokens"]), reverse=True):
-                rank = min(range(self.world), key=loads.__getitem__)
-                loads[rank] += len(x["prompt"]) + len(x["tokens"]) - 1
-                if rank == self.rank:
-                    part.append(x)
-        else:
-            part = items[self.rank::self.world]
+        results = []
+        inputs, samples = [], []
+        waves = list(training_waves(items, self.cfg, lambda x: len(x["prompt"])+len(x["tokens"])))
+        for block, ranks, loads in waves:
+            part = [block[i] for i in ranks[self.rank]]
+            results.append(self.train_part(part, block))
+            inputs.append(loads[self.rank])
+            samples.append(len(part))
+        return dict(tokens=sum(r["tokens"] for r in results), loss_sum=sum(r["loss_sum"] for r in results),
+                    max_logp_error=max(r["max_logp_error"] for r in results),
+                    input_tokens_per_microbatch=inputs, samples_per_microbatch=samples)
+
+    def train_part(self, part, items):
         # Empty ranks enter the same collectives, with an exactly zero objective.
         batch = part or items[:1]
         old_logps = [None] * len(batch)

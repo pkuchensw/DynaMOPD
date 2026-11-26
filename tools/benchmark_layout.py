@@ -10,6 +10,17 @@ def hydra_values(command):
     return dict(arg.lstrip("+").split("=", 1) for arg in command if "=" in arg)
 
 
+def check_verl_recipe(command, batch):
+    actual = hydra_values(command)
+    required = {"distillation.distillation_loss.loss_mode": "k1",
+                "distillation.distillation_loss.use_policy_gradient": "true",
+                "distillation.distillation_loss.use_task_rewards": "false",
+                "distillation.teacher_key": "teacher_routing_key", **verl_update_options(batch)}
+    for key, value in required.items():
+        if actual.get(key) != str(value):
+            raise ValueError(f"strict verl comparison requires {key}={value}, recorded {actual.get(key)!r}")
+
+
 def benchmark_nodes(cfg):
     shape = node_shape(cfg.get("cluster", {}))
     if shape and any(groups * cfg["group_size"] != len(cfg["benchmark_devices"]) for _, groups in shape):
@@ -77,14 +88,15 @@ def check_command(cfg, system, command):
                         teacher_tp_size=spec["teacher_tp"], teacher_dp_size=spec["teacher_replicas"],
                         teacher_pp_size=1, fsdp_size=spec["fsdp_shard_size"], micro_train_batch_size=spec["microbatch_per_gpu"],
                         max_token_len_per_gpu=spec["token_budget_per_gpu"], train_batch_size=cfg["batch_size"],
-                        rollout_batch_size=cfg["batch_size"], generate_max_len=cfg["max_new_tokens"])
+                        rollout_batch_size=cfg["batch_size"], generate_max_len=cfg["max_new_tokens"],
+                        teacher_routing_key="teacher_routing_key")
     else:
         actual = hydra_values(command)
+        check_verl_recipe(command, cfg["batch_size"])
         actor = spec["rollout_tp"] * spec["rollout_replicas"]
         teacher = spec["teacher_tp"] * spec["teacher_replicas"]
         width = len(spec["devices"])
-        expected = {**verl_update_options(cfg["batch_size"]),
-                    "trainer.nnodes": max(1, actor // width), "distillation.nnodes": max(1, teacher // width),
+        expected = {"trainer.nnodes": max(1, actor // width), "distillation.nnodes": max(1, teacher // width),
                     "trainer.n_gpus_per_node": min(width, actor), "distillation.n_gpus_per_node": min(width, teacher),
                     "actor_rollout_ref.rollout.tensor_model_parallel_size": spec["rollout_tp"],
                     "actor_rollout_ref.actor.fsdp_config.fsdp_size": spec["fsdp_shard_size"],

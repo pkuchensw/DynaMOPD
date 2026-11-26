@@ -1,6 +1,7 @@
 """Worker timing primitives shared by trace fitting, prediction and virtual execution."""
 from pathlib import Path
 from statistics import median
+from ..scheduler.batching import training_waves
 
 
 def engine_classes(cfg):
@@ -32,9 +33,13 @@ def replay_move_base(cfg, *, accepted=True):
         return cfg["costs"]["move_base"], "costs.move_base"
     # An accepted handoff exports and releases on the source. A rejected one
     # exports and gets a reply from the destination. Both need two control calls.
-    if "sim_rpc_overhead_s" in cfg:
-        return 2 * cfg["sim_rpc_overhead_s"], "rpc_overhead_proxy"
-    return 2 * cfg["costs"]["score_base"], "score_launch_proxy"
+    for seconds, source in ((cfg.get("sim_rpc_overhead_s"), "rpc_overhead_proxy"),
+                            (cfg["costs"].get("score_base"), "score_launch_proxy"),
+                            (cfg.get("sim_short_score_s"), "short_score_batch_proxy"),
+                            (cfg["costs"].get("score_token"), "single_score_token_proxy")):
+        if seconds is not None and seconds > 0:
+            return 2 * seconds, source
+    raise ValueError("migration replay needs a measured handoff or a positive RPC or scoring timing")
 
 
 def decode_features(requests):
@@ -74,7 +79,7 @@ def decode_windows(entries, pages, page_size):
 
 
 def train_width(lengths, cfg):
-    """Critical rank input tokens, matching FSDP2 packed or padded rank assignment."""
+    """Reconstruct the old assignment for historical receipts without rank widths."""
     world = cfg.get("group_size", 1)
     if cfg.get("trainer_attention") == "flash_attention_2":
         loads = [0] * world
@@ -163,9 +168,11 @@ def fit_line(points):
     return [base, median(max(0., t - base) / x for x, t in points)]
 
 
-def train_seconds(cfg, lengths):
+def train_seconds(cfg, lengths, wave_widths=None):
     coeff = cfg.get("sim_worker_profile", {}).get("train")
     if coeff:
-        return coeff[0] + coeff[1] * train_width(lengths, cfg)
+        if wave_widths is None:
+            wave_widths = [max(loads) for _, _, loads in training_waves(lengths, cfg, int, forecast=True)]
+        return len(wave_widths) * coeff[0] + coeff[1] * sum(wave_widths)
     return cfg["costs"]["train_token"] * sum(lengths)
 

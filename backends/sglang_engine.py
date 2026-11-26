@@ -13,6 +13,7 @@ from uuid import uuid4
 import requests
 
 from .score_cache import trim_score_cache
+from ..trainer.data import validate_sampled_ids
 
 
 def sglang_args(cfg, width, name, model, initial_version):
@@ -211,13 +212,7 @@ class Inference:
             entries = meta["output_token_logprobs"]
             if not ids or [entry[1] for entry in entries] != ids:
                 raise RuntimeError("misaligned SGLang output logprobs")
-            if self.sampled_id_limits is None:
-                unexpected = self.excluded_ids.intersection(ids)
-            else:
-                limit = self.sampled_id_limits[x["teacher"]]
-                unexpected = {token for token in ids if not 0 <= token < limit}
-            if unexpected:
-                raise ValueError(f"{x['rid']} sampled IDs unsupported for teacher {x['teacher']}: {sorted(unexpected)}")
+            validate_sampled_ids(ids, x["rid"], x["teacher"], self.sampled_id_limits, self.excluded_ids)
             start = len(x["tokens"])
             finish = None
             if ids[-1] in self.cfg["eos_ids"]:

@@ -3,9 +3,18 @@ import errno
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import tempfile
 from uuid import uuid4
+
+
+def file_digest(path, output=None):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(4 * 1024 * 1024):
+            digest.update(chunk)
+            if output is not None:
+                output.write(chunk)
+    return digest.hexdigest()
 
 
 def stage_model(path, folder):
@@ -14,11 +23,9 @@ def stage_model(path, folder):
                    (".safetensors", ".json", ".jinja", ".txt", ".model"))
     if not any(f.suffix==".safetensors" for f in files):
         raise ValueError(f"no safetensors checkpoint under {source}")
-    digest = hashlib.sha256(str(source).encode())
-    for f in files:
-        stat = f.stat()
-        digest.update(f"{f.name}/{stat.st_size}/{stat.st_mtime_ns}".encode())
-    dest = folder/(source.name+"-"+digest.hexdigest()[:16])
+    manifest = {f.name: file_digest(f) for f in files}
+    digest = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+    dest = folder/(source.name+"-"+digest)
     if not dest.exists():
         # A sibling staging task or process may publish this same image first.
         # Only a fully copied directory is visible at the content-keyed path.
@@ -26,7 +33,9 @@ def stage_model(path, folder):
             candidate = Path(scratch) / "model"
             candidate.mkdir()
             for f in files:
-                shutil.copyfile(f, candidate / f.name)
+                with (candidate / f.name).open("xb") as output:
+                    if file_digest(f, output) != manifest[f.name]:
+                        raise RuntimeError(f"checkpoint changed while staging {f}")
             try:
                 candidate.rename(dest)
             except OSError as exc:

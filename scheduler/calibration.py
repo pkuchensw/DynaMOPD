@@ -3,6 +3,7 @@ from collections import Counter, defaultdict
 from math import ceil
 
 from .protocol import Action
+from .batching import training_waves
 
 
 def update_profile(controller, events):
@@ -73,8 +74,7 @@ def share_ready(s, idle, *, early_training=True, live_prefix=True, calibrated=Fa
             g = min(trainers, key=lambda g: (g.gpu not in s.training_groups, g.role in score,
                                              g.gpu != s.trainer, g.gpu))
             share = min(cfg["microbatch"], ceil(len(ready)/len(trainers)))
-            block = next(iter(batches(ready, share, cfg["train_budget"], lambda r: len(r.prompt)+len(r.tokens),
-                                      cfg.get("trainer_attention") == "flash_attention_2")))
+            block, _, _ = next(training_waves(ready, cfg, lambda r: len(r.prompt)+len(r.tokens), share))
             action = Action("train", g.gpu, s.version, dict(items=[dict(rid=r.rid) for r in block]))
         elif scoring and score:
             serving = Counter(s.target_role(h) for h in s.groups if h.busy)

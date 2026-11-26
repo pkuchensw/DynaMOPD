@@ -113,6 +113,8 @@ def fit(folder, version):
         lo,hi = score[:n],score[-n:]
         short,long = median(x for x,_ in lo),median(x for x,_ in hi)
         launch = median(t for _,t in lo)
+        if launch > 0:
+            cfg["sim_short_score_s"] = launch
         slope = max(1e-9,(median(t for _,t in hi)-launch)/max(1,long-short))
         cfg["costs"].update(score_base=max(.000001,launch-slope*short),score_token=slope)
     calibrated = next((e for e in events if e["event"] == "cost_calibration"

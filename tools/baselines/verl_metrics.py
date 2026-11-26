@@ -16,6 +16,18 @@ def install(repo, work):
         '        loss_mask = batch_td["loss_mask"]\n'
         '        mask_values = loss_mask.values() if loss_mask.is_nested else loss_mask\n'
         '        actor_output["actor/effective_training_tokens"] = [int(mask_values.sum().item())]\n' + anchor)
+    # Preserve the same per-row key in the generation request and the actor's
+    # reordered DataProto so the rollout dump can certify (prompt, teacher) pairs.
+    for original, replacement in (
+        ('set({"data_source", "reward_model", "extra_info", "uid"})',
+         'set({"data_source", "reward_model", "extra_info", "uid", self.config.distillation.teacher_key})'),
+        ('            if "request_id" in batch.non_tensor_batch:',
+         '            reward_extra_infos_to_dump["teacher_routing_key"] = list(batch.non_tensor_batch[self.config.distillation.teacher_key])\n'
+         '            if "request_id" in batch.non_tensor_batch:'),
+    ):
+        if body.count(original) != 1:
+            raise ValueError("unsupported verl rollout dump for teacher-route verification")
+        body = body.replace(original, replacement)
     source, target = repo, work
     for part in relative.parts:
         target.mkdir(parents=True, exist_ok=True)

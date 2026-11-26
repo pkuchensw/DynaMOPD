@@ -5,6 +5,15 @@ import random
 from ..scheduler.protocol import Row
 
 
+def validate_sampled_ids(ids, rid, teacher, limits, excluded):
+    if limits is None:
+        unexpected = excluded.intersection(ids)
+    else:
+        unexpected = {token for token in ids if not 0 <= token < limits[teacher]}
+    if unexpected:
+        raise ValueError(f"{rid} sampled IDs unsupported for teacher {teacher}: {sorted(unexpected)}")
+
+
 def vocabulary(cfg):
     from transformers import AutoConfig, AutoTokenizer, GenerationConfig
     tokenizer = AutoTokenizer.from_pretrained(cfg["student"], local_files_only=True)

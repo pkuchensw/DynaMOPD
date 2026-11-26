@@ -86,9 +86,21 @@ def collect(folder):
 
 def compare(off,on):
     cfgs = [read(folder/"config.json") for folder in (off,on)]
-    for cfg in cfgs:
-        cfg.pop("rollout_tp_expansion",None)
-        cfg.pop("policy",None)
+    for expected, cfg in zip((False, True), cfgs, strict=True):
+        mesh = cfg.pop("rollout_tp_expansion", None)
+        policy = cfg.get("policy", "cost_search")
+        if policy in ("merge", "elastic_tp"):
+            enabled = bool(mesh) and policy == "elastic_tp"
+            cfg["policy"] = "merge"
+        elif policy == "cost_search":
+            options = dict(cfg.get("policy_options", {}))
+            allow_wide = options.pop("allow_tp_expansion", True)
+            enabled = bool(mesh) and allow_wide
+            cfg.update(policy=policy, policy_options=options)
+        else:
+            raise ValueError(f"{policy} cannot isolate TP expansion from other policy changes")
+        if enabled != expected:
+            raise ValueError("TP comparison requires an expansion-disabled run followed by an expansion-enabled run")
     if cfgs[0]!=cfgs[1]:
         raise ValueError("non-TP benchmark options differ")
     base,wide = collect(off),collect(on)

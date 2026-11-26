@@ -97,7 +97,10 @@ def observations(cfg, events):
                         context, steps = prompts[rid]+x["start"], x["end"]-x["start"]
                         requests[lane].append((context, steps, cached))
                         estimated[lane].append((context, steps, context-1 if x["start"] else 0))
-                        quotas[lane].append((steps, context, min(cfg["quantum"], limits[rid]-x["start"])))
+                        quota = min(cmd.get("steps", cfg["quantum"]), limits[rid]-x["start"])
+                        if not 0 < steps <= quota:
+                            raise ValueError(f"decode receipt exceeds dispatched quota for {rid}")
+                        quotas[lane].append((steps, context, quota))
                 if op == "score":
                     point.update(role=cmd["role"], critical_tokens=max(loads))
                 elif cmd.get("peer") is None and "cached_tokens" in e:
@@ -108,6 +111,10 @@ def observations(cfg, events):
                     point["estimated_lanes"] = [rpc_decode_features(lane, t) for lane,t in zip(estimated,ticks)]
             elif op == "train":
                 point["lengths"] = [lengths[rid] for rid in cmd["ids"]]
+                if "rank_input_tokens" in e:
+                    point["wave_widths"] = [max(wave) for wave in zip(*e["rank_input_tokens"], strict=True)]
+                else:
+                    point["wave_widths"] = [train_width(point["lengths"], cfg)]
             elif op == "commit":
                 point["mode"] = "durable" if e.get("durable", True) else "export" if e.get("hf_checkpoint") else "step"
             elif op == "move":
@@ -206,7 +213,7 @@ def fit_profile(cfg, points):
     if complete and cfg.get("max_train_groups", 1) > 1:
         profile["tensor_collective_s"] = median(complete)
     if by_op["train"]:
-        profile["train"] = fit_line([(train_width(p["lengths"], cfg), p["dt"]) for p in by_op["train"]])
+        profile["train"] = fit_line([(mean(p["wave_widths"]), p["dt"] / len(p["wave_widths"])) for p in by_op["train"]])
     residuals = defaultdict(list)
     for p in points:
         if "lanes" in p:
@@ -218,7 +225,7 @@ def fit_profile(cfg, points):
             predict = base + slope*p["critical_tokens"]
         elif p["op"] == "train":
             key = "train"
-            predict = train_seconds(dict(cfg, sim_worker_profile=profile), p["lengths"])
+            predict = train_seconds(dict(cfg, sim_worker_profile=profile), p["lengths"], p["wave_widths"])
         else:
             continue
         if predict > 0 and p["dt"] > 0:
@@ -311,7 +318,7 @@ def evaluate(cfg, points, trained, held, validation=None, extra_fitting=()):
             if old_train is None:
                 raise ValueError("no train timing in the fitting rounds or configuration")
             legacy = sum(p["lengths"]) * old_train
-            pred = train_seconds(dict(cfg, sim_worker_profile=profile), p["lengths"])
+            pred = train_seconds(dict(cfg, sim_worker_profile=profile), p["lengths"], p["wave_widths"])
             label = "train"
         else:
             continue

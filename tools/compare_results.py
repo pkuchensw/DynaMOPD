@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 
 from DynaMOPD.tools.audit import audit
-from DynaMOPD.tools.benchmark_layout import check_command, check_layouts, hydra_values, verl_update_options
+from DynaMOPD.tools.benchmark_data import training_input
+from DynaMOPD.tools.benchmark_layout import check_command, check_layouts, check_verl_recipe
 
 
 def metric(line, name):
@@ -44,15 +45,18 @@ def verify_questions(run, manifest, dataset, tokenizer, strict=False):
             if not path.exists() and manifest["system"]=="kdflow":
                 path = Path(manifest["state"])/"checkpoint/rollout_data"/path.name
             key = "prompt" if manifest["system"]=="kdflow" else "input"
-            texts = [sample[key] for sample in read_jsonl(path)]
+            samples = read_jsonl(path)
+            texts = [sample[key] for sample in samples]
         if strict:
             ids = [tokenizer.apply_chat_template(r["prompt"], tokenize=True, add_generation_prompt=True,
                                                  enable_thinking=False, return_dict=False) for r in expected]
             if manifest["system"] == "dynamopd" and [s["prompt"] for s in samples] != ids:
                 raise ValueError("DynaMOPD prompt token IDs differ from the shared template")
             rendered = tokenizer.batch_decode(ids, skip_special_tokens=manifest["system"] == "verl")
-            if len(rendered) != batch or Counter(texts) != Counter(rendered):
-                raise ValueError(f"{manifest['system']} step {version+1} used different full prompts")
+            actual_routes = [s.get("teacher" if manifest["system"] == "dynamopd" else "teacher_routing_key") for s in samples]
+            expected_routes = [r["teacher_routing_key"] for r in expected]
+            if len(rendered) != batch or Counter(zip(texts, actual_routes)) != Counter(zip(rendered, expected_routes)):
+                raise ValueError(f"{manifest['system']} step {version+1} used different prompts or teacher routes")
             # Distinct official prompts can differ only in whitespace. The
             # exact multiset above preserves that distinction and multiplicity.
             matched.append(len(rendered))
@@ -80,8 +84,8 @@ def summarize(folder, *, training_only=False, systems=None):
         if "verl_teacher_gpus" not in cfg or "inference_tp_size" not in cfg:
             raise ValueError("these historical runs have no shared parallel layout; request one system for its absolute metrics")
         shared_layout = check_layouts(cfg, systems)
-        config_digest = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()
-        dataset_digest = hashlib.sha256((folder/"train.jsonl").read_bytes()).hexdigest()
+    config_digest = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()
+    dataset_digest = hashlib.sha256((folder/"train.jsonl").read_bytes()).hexdigest()
     for system in systems:
         run = folder/(cfg.get("dynamopd_run","dynamopd") if system=="dynamopd" else system)
         manifest = json.loads((run/"run.json").read_text())
@@ -126,14 +130,7 @@ def summarize(folder, *, training_only=False, systems=None):
                 counts = [int(n) for n in re.findall(r"matched_training_tokens=(\d+)", logs)]
                 entry["effective_training_tokens"] = counts
             elif system == "verl":
-                cmd = hydra_values(manifest["command"])
-                required = {"distillation.distillation_loss.loss_mode": "k1",
-                            "distillation.distillation_loss.use_policy_gradient": "true",
-                            "distillation.distillation_loss.use_task_rewards": "false",
-                            **verl_update_options(batch)}
-                for key, value in required.items():
-                    if cmd.get(key) != str(value):
-                        raise ValueError(f"strict verl comparison requires {key}={value}, recorded {cmd.get(key)!r}")
+                check_verl_recipe(manifest["command"], batch)
                 # Measured on the exact loss mask submitted to the completed native actor update.
                 # Historical logs without this independent observation cannot certify full coverage.
                 counts = [metric(line, "actor/effective_training_tokens") for line in lines]
@@ -142,6 +139,11 @@ def summarize(folder, *, training_only=False, systems=None):
                 entry["effective_training_tokens"] = [int(n) for n in counts]
             if entry["effective_training_tokens"] != totals:
                 raise ValueError(f"{system} did not train every generated response token")
+            if not manifest.get("training_input"):
+                raise ValueError(f"{system} has no digest of its actual training input")
+            if (manifest["training_input"] != training_input(folder, system, manifest["command"], dataset, cfg)
+                    or manifest.get("dataset_sha256") != dataset_digest or manifest.get("config_sha256") != config_digest):
+                raise ValueError(f"{system} training input differs from the launch manifest")
             entry["full_rendered_prompts_verified"] = True
             if len(times) > 2:
                 entry["warm_without_final_save_tokens_s"] = sum(totals[1:-1]) / sum(times[1:-1])
