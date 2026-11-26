@@ -7,7 +7,8 @@ from statistics import median
 
 
 def fit(folder, version):
-    events = [json.loads(line) for line in (folder/"events.jsonl").read_text().splitlines()]
+    with (folder/"events.jsonl").open(encoding="utf-8") as stream:
+        events = [json.loads(line) for line in stream]
     header = events[0]
     if header["backend"] != "sglang_fsdp2":
         raise ValueError("calibration requires native SGLang/FSDP2 worker receipts")
@@ -15,7 +16,8 @@ def fit(folder, version):
            if k not in ("state_dir","log_dir","export_dir","final_version","excluded_ids","sampled_id_limits","eos_ids","staged")}
     # Runs recorded before tensor publication always used the HF export path.
     cfg.setdefault("weight_sync", "disk")
-    samples = {r["rid"]:r for r in map(json.loads,(folder/f"samples-v{version}.jsonl").read_text().splitlines())}
+    with (folder/f"samples-v{version}.jsonl").open(encoding="utf-8") as stream:
+        samples = {r["rid"]: r for r in map(json.loads, stream)}
     pending = {}
     observations = defaultdict(list)
     switches = defaultdict(list)
@@ -29,6 +31,8 @@ def fit(folder, version):
             continue
         g,op,dt = e["gpu"],e["op"],e["end"]-e["start"]
         ids = pending.pop(g)["ids"]
+        if op in ("score", "decode", "train") and e.get("peer") is None and "worker_s" in e:
+            observations["rpc_overhead"].append(max(0., dt - e["worker_s"]))
         if op=="commit":
             observations["optimizer"].append(e.get("optimizer_and_probe_s",dt))
             if e.get("durable",True):
@@ -79,6 +83,8 @@ def fit(folder, version):
                 observations["score"].append((max(1,width),dt))
     if not observations["optimizer"]:
         raise ValueError("calibration requires a completed round")
+    if observations["rpc_overhead"]:
+        cfg["sim_rpc_overhead_s"] = median(observations["rpc_overhead"])
     if activation:
         cfg["sim_teacher_activation_s"] = {role: median(seconds) for role, seconds in activation.items()}
     if observations["prepare"]:

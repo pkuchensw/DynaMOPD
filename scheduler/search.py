@@ -295,7 +295,7 @@ class Forecast:
     def move_cost(self, src, dst, deferred=False):
         tokens = sum(len(r.prompt)+len(r.tokens)+self.inflight_tokens.get(r.rid, 0) for r in self.live[src]
                      if self.left[r.rid] > self.inflight_tokens.get(r.rid, 0))
-        base = self.profile.get("move_base", self.s.cost.get("move_base"))
+        base = self.profile["move_base"] if "move_base" in self.profile else self.s.cost.get("move_base")
         a, b = self.profile.get("move_install", [0., self.s.cost.get("prefill_token")])
         return base + (0. if deferred else a + b*tokens) + self.s.transfer_penalty(src, dst)
 

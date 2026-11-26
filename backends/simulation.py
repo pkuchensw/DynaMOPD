@@ -4,7 +4,7 @@ import random
 import math
 from .score_cache import trim_score_cache
 from .sim_profile import (SwitchState, decode_duration, decode_features, decode_roofline, decode_windows, rpc_decode_features, engine_classes,
-                          fitted_switch, train_seconds, teacher_lease_window)
+                          fitted_switch, replay_move_base, train_seconds, teacher_lease_window)
 from itertools import count
 
 from srl.component.rollout.engine.kv.manager import KvCacheManager
@@ -483,7 +483,8 @@ class Simulator:
                            for need, cap, m, sizes in zip(headroom, limits, managers, by_lane, strict=True))
             value = dict(accepted=accepted, ids=[x["rid"] for x in items],
                          required_kv_tokens=sum(headroom), capacity_tokens=sum(limits))
-            dt = self.profile.get("move_base", c["move_base"]) if accepted else (self.profile.get("move_reject") or c["move_base"])
+            dt, source = replay_move_base(cfg, accepted=accepted)
+            value.update(move_base_s=dt, move_cost_source=source)
             if self.placements[gpu].node != self.placements[a.peer].node:
                 dt += c.get("cross_node_move_s", 0.)
             if accepted:

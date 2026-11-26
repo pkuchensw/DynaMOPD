@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from ..algorithms import build_algorithm
-from ..cluster.topology import allocations, node_shape
+from ..cluster.topology import allocations, inference_width, node_shape
 from ..backends.registry import executor_class
 from ..scheduler.policy import build_policy
 
@@ -28,11 +28,7 @@ def configure_sglang(cfg):
     for flag in ("teacher_rank_images", "parallel_wide_publication", "overlap_wide_startup"):
         if flag in cfg and type(cfg[flag]) is not bool:
             raise ValueError(f"{flag} must be a boolean")
-    if type(cfg.get("group_size")) is not int or cfg["group_size"] < 1:
-        raise ValueError("group_size must be a positive integer")
-    width = cfg.get("inference_tp_size", cfg["group_size"])
-    if type(width) is not int or width < 1 or cfg["group_size"] % width:
-        raise ValueError("inference_tp_size must divide the local FSDP group size")
+    inference_width(cfg)
     if cfg.get("rollout_sampling_mode", "batch_invariant") not in ("batch_invariant", "request_seed"):
         raise ValueError("unsupported rollout_sampling_mode")
     legacy = any(cfg.get(k) for k in ("cache_teacher_weights", "prime_teacher_weights", "warm_teachers"))
@@ -90,7 +86,7 @@ def build_job(config, *, simulate, replay, resume_version):
         # Timing parameters belong to this invocation's allocation.
         cfg["costs"] = {}
         cfg.pop("tail_prior", None)
-        for key in ("sim_worker_profile", "sim_decode_roofline", "sim_teacher_prepare_s",
+        for key in ("sim_worker_profile", "sim_decode_roofline", "sim_rpc_overhead_s", "sim_teacher_prepare_s",
                     "sim_teacher_release_s", "sim_teacher_activation_s", "sim_engine_classes"):
             cfg.pop(key, None)
         if cfg.get("rollout_tp_expansion"):

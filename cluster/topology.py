@@ -104,6 +104,16 @@ def local_pairs(placements):
     return [(a, b) for ids in groups.values() for a, b in zip(ids[::2], ids[1::2])]
 
 
+def inference_width(cfg):
+    width = cfg.get("group_size")
+    if type(width) is not int or width < 1:
+        raise ValueError("group_size must be a positive integer")
+    tp = cfg.get("inference_tp_size", width)
+    if type(tp) is not int or tp < 1 or width % tp:
+        raise ValueError("inference_tp_size must divide the local FSDP group size")
+    return tp
+
+
 def describe_layout(cfg):
     """Describe an offline Ray reservation. Device IDs are known only after placement."""
     from ..backends.elastic_profile import TailProfile
@@ -112,9 +122,9 @@ def describe_layout(cfg):
     if cluster.get("transport") != "ray" or not node_shape(cluster):
         raise ValueError("layout inspection needs a Ray cluster with nodes or node_count and groups_per_node")
     width, groups = cfg["group_size"], cfg["groups"]
-    tp = cfg.get("inference_tp_size", width)
-    if cfg.get("engine", "sglang_fsdp2") != "sglang_fsdp2" or width < 2 or tp < 1 or width % tp:
-        raise ValueError("expected SGLang/FSDP2 with inference_tp_size dividing a sharded group")
+    tp = inference_width(cfg)
+    if cfg.get("engine", "sglang_fsdp2") != "sglang_fsdp2":
+        raise ValueError("Ray layout inspection requires SGLang/FSDP2")
     if cfg["batch_size"] < groups:
         raise ValueError("each rollout group requires at least one request per round")
     plan = allocations(cfg)

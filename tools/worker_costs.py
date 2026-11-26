@@ -233,8 +233,9 @@ def fit_profile(cfg, points):
             profile[mode] = median(times)
     moves = by_op["move"]
     if moves:
-        profile["move_reject"] = median(p["dt"] for p in moves if not p["accepted"]) if any(
-            not p["accepted"] for p in moves) else None
+        rejections = [p["dt"] for p in moves if not p["accepted"]]
+        if rejections:
+            profile["move_reject"] = median(rejections)
         accepts = [p for p in moves if p["accepted"]]
         if accepts:
             profile["move_base"] = median(p["dt"] - p["install"] for p in accepts)

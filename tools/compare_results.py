@@ -8,14 +8,18 @@ from pathlib import Path
 import re
 
 from DynaMOPD.tools.audit import audit
-from DynaMOPD.tools.benchmark_layout import check_command, check_layouts
+from DynaMOPD.tools.benchmark_layout import check_command, check_layouts, hydra_values, verl_update_options
 
 
 def metric(line, name):
-    match = re.search(r"(?<![\w/])"+re.escape(name)+r":\s*([-+\d.eE]+)",line)
+    # verl pretty-prints the NumPy scalar returned by reduce_metrics.
+    number = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+    scalar = rf"(?:np|numpy)\.(?:float|u?int)(?:8|16|32|64|128)\(\s*({number})\s*\)"
+    value = rf"(?:{scalar}|({number}))" + r"(?=$|[\s,}\]])"
+    match = re.search(r"(?<![\w/])" + re.escape(name) + r":\s*" + value, line)
     if match is None:
         raise ValueError(f"missing {name} in native training metrics")
-    return float(match.group(1))
+    return float(match.group(1) or match.group(2))
 
 
 def read_jsonl(path):
@@ -122,13 +126,14 @@ def summarize(folder, *, training_only=False, systems=None):
                 counts = [int(n) for n in re.findall(r"matched_training_tokens=(\d+)", logs)]
                 entry["effective_training_tokens"] = counts
             elif system == "verl":
-                cmd = set(manifest["command"])
-                required = {"distillation.distillation_loss.loss_mode=k1",
-                            "distillation.distillation_loss.use_policy_gradient=true",
-                            "distillation.distillation_loss.use_task_rewards=false",
-                            f"actor_rollout_ref.actor.ppo_mini_batch_size={batch}"}
-                if not required <= cmd:
-                    raise ValueError("native verl job uses a different distillation recipe")
+                cmd = hydra_values(manifest["command"])
+                required = {"distillation.distillation_loss.loss_mode": "k1",
+                            "distillation.distillation_loss.use_policy_gradient": "true",
+                            "distillation.distillation_loss.use_task_rewards": "false",
+                            **verl_update_options(batch)}
+                for key, value in required.items():
+                    if cmd.get(key) != str(value):
+                        raise ValueError(f"strict verl comparison requires {key}={value}, recorded {cmd.get(key)!r}")
                 # Measured on the exact loss mask submitted to the completed native actor update.
                 # Historical logs without this independent observation cannot certify full coverage.
                 counts = [metric(line, "actor/effective_training_tokens") for line in lines]

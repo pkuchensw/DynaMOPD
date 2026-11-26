@@ -13,7 +13,8 @@ import time
 
 from DynaMOPD.cluster.topology import visible_devices
 from DynaMOPD.trainer.config import resolve_model_paths
-from DynaMOPD.tools.benchmark_layout import benchmark_nodes, check_command, check_layouts
+from DynaMOPD.trainer.data import load_data
+from DynaMOPD.tools.benchmark_layout import benchmark_nodes, check_command, check_layouts, verl_update_options
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,7 +29,7 @@ def benchmark_profile(path):
 def prepare(out, batch, rounds, cap, devices, group_size=2, systems=("dynamopd","kdflow"), tp_size=1, *, profile_root=None):
     import pyarrow.parquet as pq
     data = benchmark_profile(profile_root)/"data"
-    records = [json.loads(line) for line in (data/"dapo.jsonl").read_text().splitlines()]
+    records = load_data(data/"dapo.jsonl")
     training = records[:batch*rounds]
     table = pq.read_table(data/"dapo.parquet").slice(0,len(training))
     if len(training) != batch*rounds:
@@ -56,7 +57,7 @@ def prepare(out, batch, rounds, cap, devices, group_size=2, systems=("dynamopd",
     out.mkdir(parents=True,exist_ok=False)
     (out/"train.jsonl").write_text("".join(json.dumps(x)+"\n" for x in training))
     pq.write_table(table,out/"train.parquet")
-    evaluation = [json.loads(x) for x in (data/"pilot.jsonl").read_text().splitlines()][:32]
+    evaluation = load_data(data/"pilot.jsonl")[:32]
     train_prompts = {str(x["prompt"]) for x in training}
     assert len(evaluation)==32 and all(str(x["prompt"]) not in train_prompts for x in evaluation)
     (out/"heldout.jsonl").write_text("".join(json.dumps(x)+"\n" for x in evaluation))
@@ -75,14 +76,9 @@ def replace_flags(args, changes):
 
 
 def replace_hydra(args, changes):
-    result = list(args)
-    for k,v in changes.items():
-        positions = [i for i,x in enumerate(result) if x.startswith(k+"=")]
-        if positions:
-            result[positions[0]] = k+"="+str(v)
-        else:
-            result.append(k+"="+str(v))
-    return result
+    keys = {key.lstrip("+") for key in changes}
+    kept = [arg for arg in args if "=" not in arg or arg.split("=", 1)[0].lstrip("+") not in keys]
+    return kept + [f"{key}={value}" for key, value in changes.items()]
 
 
 def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, profile_root=None, command_file=None):
@@ -173,13 +169,14 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
 
             # KDFlow's sampler always uses randperm(seed + epoch). Invert its
             # epoch-zero permutation on disk so each optimizer sees the same prompt set.
-            source = (out/"train.jsonl").read_text().splitlines()
+            with (out/"train.jsonl").open(encoding="utf-8") as stream:
+                source = [line.rstrip("\r\n") for line in stream if line.strip()]
             order = torch.randperm(len(source),generator=torch.Generator().manual_seed(cfg["seed"])).tolist()
             sampler_rows = [""]*len(source)
             for index,line in zip(order,source,strict=True):
                 sampler_rows[index] = line
             kd_data = target/"sampler-input.jsonl"
-            kd_data.write_text("\n".join(sampler_rows)+"\n")
+            kd_data.write_text("\n".join(sampler_rows)+"\n", encoding="utf-8")
             teacher_file = target/"teachers.json"
             teacher_file.write_text(json.dumps(teacher_paths,indent=2))
             cmd = replace_flags(base,dict(train_batch_size=batch,rollout_batch_size=batch,generate_max_len=cap,
@@ -225,7 +222,7 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
                         "actor_rollout_ref.actor.fsdp_config.seed":cfg["seed"],
                         "actor_rollout_ref.rollout.seed":cfg["seed"],"data.max_prompt_length":prompt,
                         "data.val_files":out/"train.parquet","data.max_response_length":cap,"data.shuffle":"false",
-                        "actor_rollout_ref.actor.ppo_mini_batch_size":batch,"actor_rollout_ref.rollout.temperature":cfg["temperature"],
+                        **verl_update_options(batch), "actor_rollout_ref.rollout.temperature":cfg["temperature"],
                         "actor_rollout_ref.rollout.top_p":1.,"actor_rollout_ref.rollout.max_model_len":prompt+cap+1,
                         "trainer.total_training_steps":rounds,"trainer.default_local_dir":state/system/"checkpoint",
                         "trainer.save_freq":rounds,"actor_rollout_ref.actor.checkpoint.save_contents":"[hf_model]",

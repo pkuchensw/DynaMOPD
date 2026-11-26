@@ -21,6 +21,22 @@ def decode_roofline(cfg):
     return dict(defaults, **cfg.get("sim_decode_roofline", {}))
 
 
+def replay_move_base(cfg, *, accepted=True):
+    """Fixed seconds per virtual handoff and their provenance. KV rebuild is billed separately."""
+    profile = cfg.get("sim_worker_profile", {})
+    if not accepted and profile.get("move_reject") is not None:
+        return profile["move_reject"], "profile.move_reject"
+    if "move_base" in profile:
+        return profile["move_base"], "profile.move_base"
+    if "move_base" in cfg["costs"]:
+        return cfg["costs"]["move_base"], "costs.move_base"
+    # An accepted handoff exports and releases on the source. A rejected one
+    # exports and gets a reply from the destination. Both need two control calls.
+    if "sim_rpc_overhead_s" in cfg:
+        return 2 * cfg["sim_rpc_overhead_s"], "rpc_overhead_proxy"
+    return 2 * cfg["costs"]["score_base"], "score_launch_proxy"
+
+
 def decode_features(requests):
     """One parallel SGLang lane, with (initial context, output steps, cached input) per request."""
     ticks = tokens = attention = prefill = 0

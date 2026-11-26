@@ -2,7 +2,6 @@
 import argparse
 import json
 from pathlib import Path
-from statistics import mean
 
 from DynaMOPD.tools.compare_results import summarize
 
@@ -130,12 +129,14 @@ def compare(off,on):
         rows = run["steps"][interval]
         return sum(r["tokens"] for r in rows)/sum(r["round_s"] for r in rows)
     middle = slice(1,-1)
+    middle_times = [sum(s["round_s"] for s in run["steps"][middle]) for run in (base,wide)]
+    has_middle = len(base["steps"]) > 2
     times = [sum(s["training_s"] for s in run["steps"]) for run in (base,wide)]
     throughputs = [sum(s["tokens"] for s in run["steps"])/t for run,t in zip((base,wide),times)]
     return dict(off=base,on=wide,paired_decode=pairs,
                 training_time_speedup=times[0]/times[1],training_effective_token_speedup=throughputs[1]/throughputs[0],
-                middle_time_speedup=mean(s["round_s"] for s in base["steps"][middle])/mean(s["round_s"] for s in wide["steps"][middle]),
-                middle_effective_token_speedup=rate(wide,middle)/rate(base,middle),
+                middle_time_speedup=middle_times[0]/middle_times[1] if has_middle else None,
+                middle_effective_token_speedup=rate(wide,middle)/rate(base,middle) if has_middle else None,
                 all_step_time_speedup=sum(s["round_s"] for s in base["steps"])/sum(s["round_s"] for s in wide["steps"]),
                 all_step_effective_token_speedup=rate(wide,slice(None))/rate(base,slice(None)))
 

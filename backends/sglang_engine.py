@@ -19,7 +19,7 @@ def sglang_args(cfg, width, name, model, initial_version):
     limits = cfg.get("sglang_limits", {})
     max_requests = limits.get("max_running_requests", max(16, cfg["decode_batch"], cfg["score_batch"]))
     args = ["--model-path", model, "--tp-size", str(width), "--dtype", "bfloat16",
-            "--weight-version", initial_version, "--attention-backend", "triton",
+            "--weight-version", initial_version, "--attention-backend", "triton", "--enable-deterministic-inference",
             "--disable-piecewise-cuda-graph", "--disable-custom-all-reduce", "--skip-server-warmup",
             "--context-length", str(cfg["max_prompt"]+cfg["max_new_tokens"]+1),
             "--max-total-tokens", str(cfg["engine_kv_tokens"]), "--mem-fraction-static",
@@ -31,8 +31,6 @@ def sglang_args(cfg, width, name, model, initial_version):
     if name == "rollout" and cfg.get("qwen2_dynamic_rope", False):
         from .qwen2_rope import LOADER
         args += ["--custom-weight-loader", LOADER]
-    if name == "rollout" or cfg.get("rollout_sampling_mode", "batch_invariant") == "batch_invariant":
-        args += ["--enable-deterministic-inference"]
     if name=="rollout" and cfg.get("cuda_graph", False):
         args += ["--cuda-graph-max-bs", str(limits.get("cuda_graph_max_bs", max(8,cfg["decode_batch"])))]
     else:

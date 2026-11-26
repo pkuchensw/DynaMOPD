@@ -2,6 +2,14 @@
 from DynaMOPD.cluster.topology import node_shape
 
 
+def verl_update_options(batch):
+    return {"actor_rollout_ref.actor.ppo_mini_batch_size": batch, "actor_rollout_ref.actor.ppo_epochs": 1}
+
+
+def hydra_values(command):
+    return dict(arg.lstrip("+").split("=", 1) for arg in command if "=" in arg)
+
+
 def benchmark_nodes(cfg):
     shape = node_shape(cfg.get("cluster", {}))
     if shape and any(groups * cfg["group_size"] != len(cfg["benchmark_devices"]) for _, groups in shape):
@@ -71,11 +79,12 @@ def check_command(cfg, system, command):
                         max_token_len_per_gpu=spec["token_budget_per_gpu"], train_batch_size=cfg["batch_size"],
                         rollout_batch_size=cfg["batch_size"], generate_max_len=cfg["max_new_tokens"])
     else:
-        actual = dict(arg.lstrip("+").split("=", 1) for arg in command[3:] if "=" in arg)
+        actual = hydra_values(command)
         actor = spec["rollout_tp"] * spec["rollout_replicas"]
         teacher = spec["teacher_tp"] * spec["teacher_replicas"]
         width = len(spec["devices"])
-        expected = {"trainer.nnodes": max(1, actor // width), "distillation.nnodes": max(1, teacher // width),
+        expected = {**verl_update_options(cfg["batch_size"]),
+                    "trainer.nnodes": max(1, actor // width), "distillation.nnodes": max(1, teacher // width),
                     "trainer.n_gpus_per_node": min(width, actor), "distillation.n_gpus_per_node": min(width, teacher),
                     "actor_rollout_ref.rollout.tensor_model_parallel_size": spec["rollout_tp"],
                     "actor_rollout_ref.actor.fsdp_config.fsdp_size": spec["fsdp_shard_size"],

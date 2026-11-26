@@ -85,6 +85,10 @@ def fit(config: dict, *, output, data_path=None, state_dir=None, simulate=False,
                     # The simulated hardware keeps its own timing model. Its
                     # hidden parameters must not leak into the online planner.
                     planner_cfg = dict(cfg, costs={}, sim_worker_profile={}, sim_decode_roofline={})
+                elif simulate and "move_base" not in cfg["costs"]:
+                    from ..backends.sim_profile import replay_move_base
+                    base, _ = replay_move_base(cfg)
+                    planner_cfg = dict(cfg, costs=dict(cfg["costs"], move_base=base))
                 controller = Controller(planner_cfg, backend, policy, trace)
                 calibration_stream = None
                 if cfg.get("first_round_calibration"):
