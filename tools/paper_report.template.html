@@ -51,7 +51,7 @@ for(const r of DATA.ablations){const tr=el('tr'),td=el('td'),a=el('a',r.name);a.
 const history=Object.keys(DATA.groups).filter(k=>!known.has(k)&&!ab.has(k));setOptions($('historyCase'),history.map(k=>[k,k]));
 $('historyGo').onclick=()=>{location.hash='case/'+encodeURIComponent($('historyCase').value)};
 const phases={
- decode:['生成','#177b75'],score:['教师评分','#497dce'],train:['训练','#cb5672'],sync:['归约 / 更新','#8856ae'],handoff:['切换 / 迁移','#d68b2c'],logprob:['学生 logprob','#7677aa'],pool:['资源池','#acb9c2'],other:['其他','#71828a']
+ decode:['生成','#177b75'],score:['教师评分','#497dce'],train:['训练','#cb5672'],sync:['归约 / 更新','#8856ae'],handoff:['切换 / 迁移','#d68b2c'],teacher_group_switch:['教师组唤醒 / 休眠','#9e601f'],logprob:['学生 logprob','#7677aa'],pool:['资源池','#acb9c2'],other:['其他','#71828a']
 };
 const family=k=>({reduce:'sync',reduce_grads:'sync',publish:'sync',commit:'sync',switch:'handoff',move:'handoff',tp:'handoff',unload:'handoff',release:'handoff',load:'handoff',tp_expand:'handoff',tp_shrink:'handoff'}[k]||(phases[k]?k:'other'));
 const colorUtil=u=>'hsl(184 63% '+(97-.66*u)+'%)';
@@ -65,9 +65,10 @@ async function unpack(r){
 function prepare(r,w){
  if(!w)return {r,w:null,lanes:[]};
  const ix=r.labels.map((l,i)=>({label:l,i,spans:[],samples:w.util[i]||[]})).sort((a,b)=>a.label.localeCompare(b.label,'en',{numeric:true}));
- const byId=new Map(ix.map(x=>[x.i,x]));let pool;
+ const byId=new Map(ix.map(x=>[x.i,x]));let pool;const teacherGroup={label:'教师组',spans:[],samples:[]};
  for(const sp of w.spans){
   if(sp[3]==='pool'){if(!pool)pool={label:'全池（未分卡）',i:-1,spans:[],samples:[]};pool.spans.push(sp)}
+  else if(sp[3]==='teacher_group_switch'){teacherGroup.spans.push(sp)}
   else for(const g of sp[2])byId.get(g)?.spans.push(sp);
  }
  if(pool)ix.push(pool);
@@ -75,7 +76,7 @@ function prepare(r,w){
   const a=lane.samples;const gaps=a.slice(1).map((x,i)=>x[0]-a[i][0]).filter(t=>t>0).sort((a,b)=>a-b);
   lane.period=gaps.length?gaps[Math.floor(gaps.length/2)]:null;
  }
- return {r,w,lanes:ix};
+ return {r,w,lanes:ix,teacherGroup:teacherGroup.spans.length?teacherGroup:null};
 }
 function legend(){
  const box=$('legend');box.replaceChildren();let entries;
@@ -94,7 +95,8 @@ function renderCanvas(canvas,data,fine=false){
  const hits=[],groups=[];let y=top;
  for(const d of data){
   const n=Math.max(1,d.lanes.length),dy=fine?18:Math.min(10,Math.max(2.2,72/n)),height=n*dy;
-  groups.push({d,y,dy,height});y+=fine?height+5:Math.max(56,height)+17;
+  const showGroup=state.mode==='stage' && Boolean(d.teacherGroup);
+  groups.push({d,y,dy,height,showGroup});y+=(fine?height+5:Math.max(56,height)+17)+(showGroup?18:0);
  }
  const H=y+2,dpr=Math.min(window.devicePixelRatio||1,2),max=state.horizon;
  canvas.style.height=H+'px';canvas.width=Math.round(width*dpr);canvas.height=Math.round(H*dpr);
@@ -103,7 +105,7 @@ function renderCanvas(canvas,data,fine=false){
  const every=axisStep(max,width<550?4:8);
  for(let t=0;t<=max+1e-6;t+=every){const x=X(t);ctx.fillStyle='#52646e';ctx.textAlign=t===0?'left':'center';ctx.fillText(+t.toFixed(3)+' s',x,13);ctx.strokeStyle='#dce4e7';ctx.beginPath();ctx.moveTo(x,18);ctx.lineTo(x,H-1);ctx.stroke()}
  ctx.textAlign='left';
- for(const {d,y,dy,height} of groups){
+ for(const {d,y,dy,height,showGroup} of groups){
   if(!fine){ctx.font='bold 12px system-ui';ctx.fillStyle='#172a36';ctx.fillText(d.r.system,0,y+12,left-2);ctx.font='12px system-ui';ctx.fillStyle='#52646e';ctx.fillText(d.w?fmt(d.w.s,1)+' s':'缺少记录',0,y+27,left-2);}
   if(!d.w)continue;
   const end=X(d.w.s);
@@ -124,6 +126,14 @@ function renderCanvas(canvas,data,fine=false){
    hits.push({lo:ly,hi:ly+dy,d,lane});
   }
   if(d.lanes.length){ctx.fillStyle='#52646e';ctx.fillRect(end-.65,y,1,height);}
+  if(showGroup){
+   const lane=d.teacherGroup,ly=y+(fine?height:Math.max(56,height))+3;
+   ctx.font='11px system-ui';ctx.fillStyle='#654c30';ctx.fillText(lane.label,0,ly+10,left-4);
+   ctx.fillStyle='#f3f1ee';ctx.fillRect(left,ly,end-left,11);
+   ctx.fillStyle=phases.teacher_group_switch[1];
+   for(const sp of lane.spans){const a=X(sp[0]),b=X(sp[1]);if(b>a)ctx.fillRect(a,ly,b-a,11);}
+   hits.push({lo:ly,hi:ly+11,d,lane});
+  }
  }
  canvas.onpointermove=e=>{
   const box=canvas.getBoundingClientRect(),x=e.clientX-box.left,py=e.clientY-box.top,t=(x-left)/pw*max,hit=hits.find(h=>py>=h.lo&&py<h.hi&&t>=0&&t<=h.d.w.s);
@@ -137,7 +147,7 @@ function renderCanvas(canvas,data,fine=false){
 }
 function fineDraw(){if(!$('fine').open)return;const d=state.data[+$('fineSystem').value];if(d)renderCanvas($('fineCanvas'),[d],true)}
 function draw(){if($('detail').hidden)return;legend();renderCanvas($('compact'),state.data);fineDraw();}
-const actionNames={decision:'调度决策',switch:'角色切换',tp:'TP 扩缩容',move:'请求迁移',unload:'卸载 / 交接',publish:'发布权重',reject:'拒绝交接',commit:'提交更新',reduce:'梯度归约',pool:'资源池'};
+const actionNames={teacher_group_switch:'教师组唤醒 / 休眠',decision:'调度决策',switch:'角色切换',tp:'TP 扩缩容',move:'请求迁移',unload:'卸载 / 交接',publish:'发布权重',reject:'拒绝交接',commit:'提交更新',reduce:'梯度归约',pool:'资源池'};
 function actionKinds(){
  const d=state.data[+$('actSystem').value];const kinds=[...new Set((d?.w?.actions||[]).map(a=>a[5]))];setOptions($('actKind'),[['','全部'],...kinds.map(k=>[k,actionNames[k]||k])]);state.page=0;
 }
@@ -145,7 +155,7 @@ function actions(){
  if(!$('act').open)return;
  const d=state.data[+$('actSystem').value],kind=$('actKind').value,arr=(d?.w?.actions||[]).filter(a=>!kind||kind===a[5]),pageSize=12,pages=Math.max(1,Math.ceil(arr.length/pageSize));state.page=Math.min(Math.max(state.page,0),pages-1);
  const rows=$('actRows');rows.replaceChildren();for(const a of arr.slice(state.page*pageSize,(state.page+1)*pageSize)){
-  const tr=el('tr'),cell=el('td',a[3]);if(a[4])cell.append(el('div',a[4],'muted'));tr.append(el('td',fmt(a[0])+'–'+fmt(a[1])),el('td',fmt(a[1]-a[0],3)),el('td',a[2].map(i=>d.r.labels[i]||i).join('、')||'控制器 / 资源池'),cell);rows.append(tr);
+  const tr=el('tr'),cell=el('td',a[3]);if(a[4])cell.append(el('div',a[4],'muted'));tr.append(el('td',fmt(a[0])+'–'+fmt(a[1])),el('td',fmt(a[1]-a[0],3)),el('td',a[2].map(i=>d.r.labels[i]||i).join('、')||(a[5]==='teacher_group_switch'?'教师组':'控制器 / 资源池')),cell);rows.append(tr);
  }
  $('page').textContent=arr.length?'第 '+(state.page+1)+' / '+pages+' 页 · '+arr.length+' 条':'本步没有此类记录';$('prev').disabled=state.page===0;$('next').disabled=state.page+1>=pages;
 }
@@ -168,7 +178,7 @@ async function loadStep(){
   actionKinds();actions();$('fineCanvas').style.visibility='';
   const bases=[...new Set(data.map(d=>d.r.basis))];
   const times=bases.map(b=>data.filter(d=>d.r.basis===b).map(d=>d.r.system).join('、')+' 取'+b).join('；')+'。';
-  $('caption').textContent='每条细行代表一张 GPU，各系统共用秒轴。'+times+(data.some(d=>d.lanes.some(l=>l.i===-1))?'未报告卡号的事件单列为全池。':'');
+  $('caption').textContent='各系统共用秒轴，GPU 细行按物理卡绘制。'+times+(data.some(d=>d.lanes.some(l=>l.i===-1))?'未报告卡号的池事件单列。':'')+(data.some(d=>d.teacherGroup)?'执行阶段图的“教师组”行显示组级调用的实测时间。':'');
   if(data.every(d=>d.r.mode==='sim'))$('caption').textContent='模拟时间轴，细行表示各卡或卡组。';
   $('compact').setAttribute('aria-busy','false');draw();
  }catch(e){if(v===state.rev){$('compact').setAttribute('aria-busy','false');$('error').textContent='读取此时间线失败。请使用支持 gzip DecompressionStream 的浏览器。';}}

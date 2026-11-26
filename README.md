@@ -72,6 +72,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash ./launch.sh \
 
 ## 框架与源码入口
 
+从仓库根目录运行 `python tools/design_walkthrough.py` 可生成离线系统设计文档 `runs/system-design.html`。各层的「实现取舍」给出优化的适用条件和源码，包括迁移等待期间继续解码、教师分片复用和跨节点权重发布。加上 `--trace runs/my-job/events.jsonl --version 1` 可查看该轮的并行区间、候选布局，以及每次请求迁移和 TP 交接的耗时分项。[设计文档生成脚本](tools/design_walkthrough.py)
+
 `launch.sh`、`python -m DynaMOPD.run` 和安装后的 `dynamopd` 命令均调用 `DynaMOPD.trainer.fit`。主训练路径在本包内完成。FSDP2 分片和状态装卸工具位于 `utils/fsdp_utils.py`。原生对照实验从原 KDFlow、verl checkout 启动各自的 trainer。[Python 入口](trainer/driver.py) · [FSDP2 工具](utils/fsdp_utils.py) · [来源与许可](licenses/verl.md)
 
 | 组件 | 公共职责与入口 |
