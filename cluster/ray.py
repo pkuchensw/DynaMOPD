@@ -1,5 +1,6 @@
 """Ray transport for node-local SGLang TP / FSDP2 groups and shared round checkpoints."""
 from contextlib import ExitStack, contextmanager
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 from pathlib import Path
@@ -36,6 +37,7 @@ class RayNode:
         logs.mkdir(exist_ok=True)
         self.cfg = dict(cfg, log_dir=str(logs))
         self.runtime = self.store = self.monitor = None
+        self.model_cache = None
         self.condition = Condition()
         self.inflight = 0
         self.closing = False
@@ -76,6 +78,13 @@ class RayNode:
 
     def prepare(self, profile, staged, run_id, endpoint):
         with self.activity():
+            if staged is None:
+                cache = self.cfg.get("node_model_cache")
+                if cache is None:
+                    self.model_cache = tempfile.TemporaryDirectory(prefix="dynamopd-models-")
+                    cache = self.model_cache.name
+                with ThreadPoolExecutor() as io:
+                    staged = stage_models(self.cfg, io, folder=cache)
             self.cfg.update(staged=staged, weight_sync_run_id=run_id, weight_sync_endpoint=endpoint)
             self.runtime = NodeRuntime(self.cfg, self.placements, profile)
             return self.runtime.prepare()
@@ -106,6 +115,8 @@ class RayNode:
             if failed:
                 self.runtime.abort()
             self.runtime.close(failed)
+        if self.model_cache is not None:
+            self.model_cache.cleanup()
 
 
 class RayExecutor(GroupExecutor):
@@ -139,7 +150,7 @@ class RayExecutor(GroupExecutor):
                               for n in ray.nodes() if n["Alive"]]
                 raise RuntimeError(f"Ray reservation timed out: requested {bundles}, live node capacities {capacities}") from exc
             actor = ray.remote(max_restarts=0, max_task_retries=0)(RayNode)
-            variables = ("PYTHONPATH", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "TOKENIZERS_PARALLELISM",
+            variables = ("PYTHONPATH", "MOPD_TRACE_DIR", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "TOKENIZERS_PARALLELISM",
                          "HF_HUB_OFFLINE", "HF_HUB_DISABLE_PROGRESS_BARS", "PYTHONUNBUFFERED",
                          "SGLANG_ENABLE_LOGITS_PROCESSER_CHUNK", "SGLANG_LOGITS_PROCESSER_CHUNK_SIZE")
             runtime_env = {"env_vars": {k: os.environ[k] for k in variables if k in os.environ}}
@@ -167,17 +178,19 @@ class RayExecutor(GroupExecutor):
                 raise RuntimeError(f"overlapping Ray allocations: {self.placements}")
             self.tail_tp = TailProfile(cfg, self.placements) if cfg.get("rollout_tp_expansion") else None
             # Check shared paths and placements before copying checkpoints.
-            cfg["staged"] = stage_models(cfg, self.pool)
+            # Checkpoints and receipts remain shared. Immutable model images used
+            # by each teacher switch are read from that actor's local filesystem.
+            cfg["weight_sync_run_id"] = uuid4().hex
             endpoint = None
             if cfg.get("weight_sync", "tensor") == "tensor":
                 endpoint = ray.get(self.actors[0].start_store.remote(), timeout=timeout)
-            preparations = [a.prepare.remote(self.tail_tp, cfg["staged"], cfg["weight_sync_run_id"], endpoint)
+            preparations = [a.prepare.remote(self.tail_tp, None, cfg["weight_sync_run_id"], endpoint)
                             for a in self.actors]
             ready = ray.get(preparations, timeout=timeout)
             self.tp_setup = [mesh for meshes, _ in ready for mesh in meshes]
             self.teacher_preflight = [entry for _, entries in ready for entry in entries]
             if self.tail_tp:
-                self.tail_tp.scratch = max(x["wake_bytes"] for x in self.tp_setup)
+                self.tail_tp.configure_meshes(self.tp_setup)
         except BaseException:
             self.close(failed=True)
             raise

@@ -23,6 +23,10 @@ class AdaptivePolicy:
         self.elastic_tp = elastic_tp
 
     def plan(self, s: PlanningState):
+        if s.cost.measuring and not s.cfg.get("sim_worker_profile"):
+            from .calibration import calibration_round
+            yield from calibration_round(s, self.allow_merge, True, True)
+            return
         cfg, v = s.cfg, s.version
         active = defaultdict(list)
         for row in s.rows.values():
@@ -215,7 +219,7 @@ class AdaptivePolicy:
 
         # Request a safe point on both engines. The real path sees progress and historical
         # durations only. The executor can reject an install if device memory has changed.
-        if self.allow_merge and not s.holds:
+        if self.allow_merge and not s.holds and (not s.cost.measuring or "move_base" in s.cost.values):
             sparse = [g for g in s.groups if active[g.gpu] and g.role == "rollout" and g.gpu not in held
                       and (not g.busy or g.busy.kind == "decode")
                       and all(r.tokens for r in active[g.gpu])]

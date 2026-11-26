@@ -24,6 +24,14 @@ class PlanningState:
         self.version = controller.version
         self.cost = controller.cost
         self.tp_model = getattr(controller.backend, "tail_tp", None)
+        self.cold_start_tail = None
+        if self.version == 0 and self.cfg.get("max_length_ema_alpha", 0.2) is not None:
+            # Forecast one batch maximum. A finished row that has already reached
+            # the largest remaining cap satisfies the assumption by itself.
+            longest = max(self.rows.values(), key=lambda r: (
+                len(r.tokens) if r.finish else r.limit, len(r.tokens)), default=None)
+            if longest is not None and not longest.finish:
+                self.cold_start_tail = longest.rid
 
     @property
     def tp_pair(self):
@@ -49,7 +57,11 @@ class PlanningState:
         return self._controller.backend.now()
 
     def record_search(self, **fields):
-        self._controller.emit("schedule_search", decision_id=self._controller.decision_id, **fields)
+        self._controller.emit("schedule_search", decision_id=self._controller.decision_id,
+                              cold_start_tail=self.cold_start_tail, **fields)
+
+    def record_decode_only(self, **fields):
+        self._controller.emit("decode_only", decision_id=self._controller.decision_id, **fields)
 
     def record_tp_candidate(self, **fields):
         self._controller.emit("tp_candidate",decision_id=self._controller.decision_id,**fields)
@@ -58,6 +70,8 @@ class PlanningState:
         return self._controller.target_role(group)
 
     def remaining(self, row: Row) -> float:
+        if row.rid == self.cold_start_tail and not row.finish:
+            return row.limit - len(row.tokens)
         return self._controller.remaining(row)
 
     def teacher_switch_s(self, group: Group, role: str) -> float:

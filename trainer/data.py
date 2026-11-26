@@ -19,11 +19,16 @@ def vocabulary(cfg):
         widths.append(AutoConfig.from_pretrained(path).vocab_size)
     if not common or max(common) >= min(widths):
         raise ValueError("incompatible teacher vocabulary")
-    # Sampled K1 gathers the original ID directly from each LM head. Models
-    # with the same tokenizer and head width also share the unnamed padding
-    # rows. Native rollout can sample those rows without decoding them to text.
-    shared_head = cfg.get("algorithm") == "on_policy_k1" and identical_mapping and len(set(widths)) == 1
-    cfg["excluded_ids"] = [] if shared_head else sorted(set(range(max(widths))) - common)
+    cfg.pop("sampled_id_limits", None)
+    # A sampled K1 target only needs a row in the student and its routed teacher.
+    # Keep the common exclusion set for backends that use a shared logits mask.
+    if cfg.get("algorithm") == "on_policy_k1" and identical_mapping:
+        cfg["excluded_ids"] = list(range(min(widths), max(widths)))
+        cfg["sampled_id_limits"] = {
+            key: min(widths[0], width) for key, width in zip(cfg["teachers"], widths[1:], strict=True)
+        }
+    else:
+        cfg["excluded_ids"] = sorted(set(range(max(widths))) - common)
     eos = GenerationConfig.from_pretrained(cfg["student"]).eos_token_id
     cfg["eos_ids"] = [eos] if isinstance(eos, int) else eos
     if not set(cfg["eos_ids"]) <= common:

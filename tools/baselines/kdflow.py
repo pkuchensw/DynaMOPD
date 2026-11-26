@@ -4,7 +4,8 @@ from pathlib import Path
 import shutil
 
 
-def install(repo, work, *, synchronous_teacher=False, keep_optimizer=False, engine_options=None, devices=None):
+def install(repo, work, *, synchronous_teacher=False, keep_optimizer=False, engine_options=None, devices=None,
+            external_ray=False):
     package = work / "kdflow"
     shutil.copytree(repo / "kdflow", package, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     adapter = Path(__file__).with_name("kdflow_k1.py")
@@ -15,6 +16,17 @@ def install(repo, work, *, synchronous_teacher=False, keep_optimizer=False, engi
     if source.count(gate) != 1:
         raise ValueError("unexpected KDFlow multi-teacher registry gate")
     arguments.write_text(source.replace(gate, 'if args.kd.kd_algorithm not in ("vanilla_kd", "verl_k1"):'))
+    # Token-compatible teachers can expose different numbers of padded output
+    # rows. Negative infinity adds zero softmax mass for the sampled K1 loss.
+    vanilla = package / "algorithms/vanilla_kd.py"
+    body = vanilla.read_text()
+    combine = "        return torch.cat([x for x in logits_list if x is not None], dim=0)"
+    if body.count(combine) != 1:
+        raise ValueError("unexpected KDFlow multi-teacher head assembly")
+    vanilla.write_text(body.replace(combine, """        pieces = [x for x in logits_list if x is not None]
+        width = max(x.shape[-1] for x in pieces)
+        return torch.cat([torch.nn.functional.pad(x, (0, width - x.shape[-1]), value=-torch.inf)
+                          if x.shape[-1] < width else x for x in pieces], dim=0)"""))
     processor = package / "trainer/data_processor/rollout_data_processor.py"
     body = processor.read_text()
     # The matched models share token IDs. Send the originally sampled student
@@ -41,7 +53,15 @@ def install(repo, work, *, synchronous_teacher=False, keep_optimizer=False, engi
                 raise ValueError("unknown KDFlow student sleep policy")
             source = source.replace(original, replacement)
     trainer.write_text(source.replace(anchor, '            print("matched_training_tokens=" + str(int(batch_tokens)), flush=True)\n' + anchor))
-    files = [package / "algorithms/verl_k1.py", processor, trainer, arguments]
+    files = [vanilla, package / "algorithms/verl_k1.py", processor, trainer, arguments]
+    if external_ray:
+        driver = package / "cli/train_kd_on_policy.py"
+        body = driver.read_text()
+        start_local = 'address="local", num_cpus=64, include_dashboard=False, object_store_memory=64*1024**3,'
+        if body.count(start_local) != 1:
+            raise ValueError("unexpected KDFlow Ray initialization")
+        driver.write_text(body.replace(start_local, 'address=os.environ["RAY_ADDRESS"],'))
+        files.append(driver)
     if devices is not None and list(devices) != list(range(len(devices))):
         # KDFlow's colocated workers inherit our visible mask. Ray reports host GPU
         # IDs, while SGLang and torch expect ordinals within that mask.
@@ -76,6 +96,12 @@ def install(repo, work, *, synchronous_teacher=False, keep_optimizer=False, engi
                     "        engine = teacher_engine(PatchedEngine,\n")
             rollout = package / "ray/rollout/rollout_actor.py"
             body = rollout.read_text()
+            trace_server = package / "ray/rollout/benchmark_trace.py"
+            shutil.copyfile(Path(__file__).with_name("kdflow_rollout_trace.py"), trace_server)
+            server_import = "from sglang.srt.entrypoints.http_server import launch_server"
+            if body.count(server_import) != 1:
+                raise ValueError("unexpected KDFlow rollout server entry point")
+            body = body.replace(server_import, "from kdflow.ray.rollout.benchmark_trace import launch_server")
             marker = "        server_arg_field_names = "
             if body.count(marker) != 1:
                 raise ValueError("unexpected KDFlow rollout server arguments")
@@ -94,7 +120,7 @@ def install(repo, work, *, synchronous_teacher=False, keep_optimizer=False, engi
             manager.write_text(body.replace(per_request, "                        sampling_params=dict(sampling_params, "
                                     "sampling_seed=sampling_params.get('sampling_seed', self.args.train.seed) + index),\n"
                                     "                        session=session,"))
-            files.extend([settings, rollout, manager])
+            files.extend([settings, rollout, manager, trace_server])
         if synchronous_teacher:
             call += "            disable_overlap_schedule=True,\n"
         engine.write_text(source.replace(anchor, call))

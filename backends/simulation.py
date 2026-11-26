@@ -58,8 +58,16 @@ class Simulator:
         if cfg.get("rollout_tp_expansion"):
             from .elastic_profile import TailProfile
             self.tail_tp = TailProfile(cfg,self.placements)
+            # Controller observations update its predictor, not the virtual hardware.
+            self.execution_tp = TailProfile(dict(cfg, first_round_calibration=False),self.placements)
             options = cfg["rollout_tp_expansion"]
             self.tail_tp.scratch = options.get("wake_bytes_per_gpu",0)
+            if self.tail_tp.measuring:
+                hardware = self.execution_tp
+                self.tp_setup = [dict(groups=pair, wake_bytes=self.tail_tp.scratch, measured_costs=dict(
+                    wake_s=hardware.enter, sleep_s=hardware.leave, prefill_token_s=hardware.prefill,
+                    decode_token_s=hardware.rates[hardware.wide])) for pair in hardware.pairs]
+                self.tail_tp.configure_meshes(self.tp_setup)
             self.wide_idle_bytes = {group:options.get("idle_bytes_per_gpu",0)
                                     for pair in self.tail_tp.pairs for group in pair}
             self.wide_managers = [KvCacheManager(blocks,enable_caching=False) for _ in range(self.tail_tp.wide)]
@@ -182,7 +190,7 @@ class Simulator:
                         self.owned[a.gpu].pop(rid, None)
                     else:
                         self.owned[a.gpu][rid] = lane, contexts[rid]+len(update["tokens"])
-                if ("decode" in self.profile or "decode_rpc" in self.profile) and a.peer is None and not self.wide_managers:
+                if ("decode" in self.profile or "decode_rpc" in self.profile) and a.peer is None:
                     requests = [(contexts[rid], len(update["tokens"]), hits[rid]) for rid, update in changed.items()]
                     if "decode_rpc" in self.profile:
                         rpc_requests.extend(requests)
@@ -219,11 +227,12 @@ class Simulator:
                 u = ids[rid]
                 n = len(x["prompt"])+u["start"]+len(u["tokens"])
                 narrow = self.reqs[a.gpu].get(rid)
-                (decode if narrow is not None else prefill).append(n)
+                cached = bool(self.wide_requests) if self.wide_managers and a.peer is not None else narrow is not None
+                (decode if cached else prefill).append(n)
                 if self.wide_managers and a.peer is None and narrow is not None:
                     # The narrow engine kept its original KV while the wide
                     # engine generated. Replay its missing suffix on first use.
-                    dt += max(0, n - 1 - narrow.prefilled) * self.tail_tp.prefill
+                    dt += max(0, n - 1 - narrow.prefilled) * self.execution_tp.prefill
                 if a.peer is not None and self.wide_managers:
                     self.grow_wide(n)
                 else:
@@ -244,7 +253,7 @@ class Simulator:
                         self.free(a.peer, rid)
             if self.wide_managers and len(active)==1 and not prefill:
                 width = self.tail_tp.wide if a.peer is not None else self.tp_size
-                dt += self.tail_tp.predict(decode[0],1,width)
+                dt += self.execution_tp.predict(decode[0],1,width)
             else:
                 dt += model.step_time(sum(prefill)+len(decode),sum(n*n for n in prefill),sum(decode),len(active))
             active = [x for x in active if not ids[x["rid"]]["finish"]]
@@ -308,7 +317,8 @@ class Simulator:
         # A separate SGLang mesh sleeps on release. Rebuilding a narrow
         # suffix costs time only if this request subsequently decodes there.
         switch_tokens = 0 if self.wide_managers and not entering else transfer_tokens
-        parts = model.transition(leader, peer, donor_role, switch_tokens, entering)
+        timing = self.execution_tp if self.wide_managers else model
+        parts = timing.transition(leader, peer, donor_role, switch_tokens, entering)
         if not self.wide_managers:
             model.communicators.add(tuple(sorted(a.devices)))
         estimates = {k:v for k,v in a.payload.items() if k != "items"}

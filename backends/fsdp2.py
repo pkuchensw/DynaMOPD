@@ -328,7 +328,10 @@ class Shard:
             if op == "begin_teacher":
                 return self.publisher.begin_teacher(version)
             if op == "begin_weights":
-                return self.publisher.begin(payload["source"], version)
+                local = self.cfg.get("node_local_rollout_publication", False)
+                if local and self.version != version:
+                    raise RuntimeError("rollout publication requires refreshed FSDP master parameters")
+                return self.publisher.begin(payload["source"], version, self.model if local else None)
             if op == "weight_bucket":
                 return self.publisher.bucket(payload["index"], version, wide_receiver=payload.get("wide_receiver",False))
             return self.publisher.finish(version, collect_ipc=payload.get("wide_receiver",False))

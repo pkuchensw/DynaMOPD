@@ -35,11 +35,11 @@ def stage_model(path, folder):
     return str(dest)
 
 
-def stage_models(cfg, pool):
+def stage_models(cfg, pool, folder=None):
     # Shared by all worker processes in this invocation, including Ray actors.
     cfg["weight_sync_run_id"] = uuid4().hex
-    folder = Path(cfg["state_dir"])/"initial_models"
-    folder.mkdir(exist_ok=True)
+    folder = Path(folder) if folder is not None else Path(cfg["state_dir"])/"initial_models"
+    folder.mkdir(parents=True, exist_ok=True)
     paths = list(dict.fromkeys([cfg["student"], *cfg["teachers"].values()]))
     sources = {path: Path(path).resolve() for path in paths}
     unique = list(dict.fromkeys(sources.values()))

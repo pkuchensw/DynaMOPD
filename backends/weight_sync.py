@@ -49,6 +49,10 @@ class TensorPublisher:
         self.allocator_settings = None
         self.cursor = 0
         self.frozen = {}
+        self.local_state = None
+        self.local_parameter_names = {name for name, p in model.named_parameters(remove_duplicate=False)
+                                      if p.requires_grad}
+        self.cross_node_payload_bytes = 0
 
     @torch.no_grad()
     def capture(self, model, version):
@@ -113,7 +117,7 @@ class TensorPublisher:
         self.active_version, self.cursor, self.source = teacher, 0, None
         return dict(buckets=len(self.buckets), schema=self.digest)
 
-    def begin(self, source, version):
+    def begin(self, source, version, local_model=None):
         if self.active_version is not None or (self.group == source and self.snapshot_version != version):
             raise RuntimeError("tensor publication has a stale source or an outstanding update")
         self.prepare_ipc()
@@ -128,6 +132,8 @@ class TensorPublisher:
         if not torch.equal(bounds[0], -bounds[1]):
             raise RuntimeError("replicas disagree on weight schema, source or version")
         self.source, self.active_version, self.cursor = source, version, 0
+        self.local_state = local_model.state_dict() if local_model is not None else None
+        self.cross_node_payload_bytes = 0
         return dict(buckets=len(self.buckets), schema=self.digest,
                     weight_bytes=sum(b[-1].end_idx for b in self.buckets))
 
@@ -142,21 +148,29 @@ class TensorPublisher:
         self.buffer = None
         entries = self.buckets[index]
         flat = torch.empty(entries[-1].end_idx, dtype=torch.uint8, device=self.device)
+        # Every replicated trainer already acknowledged the exact updated FP32
+        # shards. Reconstruct its rollout bucket within the node-local FSDP mesh.
+        # Buffers and frozen parameters still use the authoritative owner image.
+        local = self.local_state is not None and all(m.name in self.local_parameter_names for m in entries)
         if self.source is None:
             for item in entries:
                 target = flat[item.start_idx:item.end_idx].view(item.dtype).view(item.shape)
                 target.copy_(self.frozen[version][item.name], non_blocking=True)
-        elif self.group == self.source:
+        elif local or self.group == self.source:
             for item in entries:
-                shard = self.snapshot.pop(item.name)
+                if self.group == self.source:
+                    shard = self.snapshot.pop(item.name)
+                else:
+                    shard = self.local_state[item.name].to(device=self.device, dtype=item.dtype)
                 full = shard.full_tensor() if isinstance(shard, DTensor) else shard
                 flat[item.start_idx:item.end_idx].view(item.dtype).view(item.shape).copy_(full)
                 del full, shard
-        if self.source is not None:
+        if self.source is not None and not local:
             options = dist.BroadcastOptions()
             options.rootRank = self.source
             options.rootTensor = 0
             self.lane.broadcast([flat], options).wait()
+            self.cross_node_payload_bytes += flat.numel()
         torch.cuda.synchronize(self.device)
         self.buffer = flat
         self.cursor += 1
@@ -174,7 +188,8 @@ class TensorPublisher:
         if version != self.active_version or self.cursor != len(self.buckets) or self.snapshot:
             raise RuntimeError("incomplete tensor publication")
         self.buffer = self.snapshot = self.snapshot_version = self.active_version = None
-        stats = {}
+        self.local_state = None
+        stats = {"rollout_lane_payload_bytes": self.cross_node_payload_bytes} if isinstance(version, int) else {}
         if collect_ipc:
             torch.cuda.ipc_collect()
             torch.cuda.empty_cache()

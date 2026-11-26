@@ -80,7 +80,16 @@ def fit(config: dict, *, output, data_path=None, state_dir=None, simulate=False,
                 monitor = backend.gpu_monitor(out / "gpu-telemetry", sample_interval)
             log.note(f"executor ready: {len(placements)} GPU groups")
             with monitor:
-                controller = Controller(cfg, backend, policy, trace)
+                planner_cfg = cfg
+                if simulate and cfg.get("first_round_calibration"):
+                    # The simulated hardware keeps its own timing model. Its
+                    # hidden parameters must not leak into the online planner.
+                    planner_cfg = dict(cfg, costs={}, sim_worker_profile={}, sim_decode_roofline={})
+                controller = Controller(planner_cfg, backend, policy, trace)
+                calibration_stream = None
+                if cfg.get("first_round_calibration"):
+                    from ..scheduler.calibration import update_profile
+                    calibration_stream = stack.enter_context((out/"events.jsonl").open())
                 controller.max_length_ema = restored_max_ema
                 for version in range(resume_version, cfg["final_version"]):
                     if replay:
@@ -91,6 +100,9 @@ def fit(config: dict, *, output, data_path=None, state_dir=None, simulate=False,
                     begin = backend.now()
                     summary = dict(version=version, **controller.run_round(rows, version))
                     elapsed = backend.now() - begin
+                    if calibration_stream is not None:
+                        events = [json.loads(line) for line in calibration_stream]
+                        update_profile(controller, [e for e in events if e.get("version") == version])
                     metrics = dict(round_s=elapsed, tokens=summary["tokens"],
                                    effective_tokens_per_s=summary["tokens"] / elapsed if elapsed else 0.,
                                    generated_tokens=sum(len(r.tokens) for r in rows),

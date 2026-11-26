@@ -1,9 +1,20 @@
-"""Resource capacities used by the single-node distillation benchmark."""
+"""Resource capacities used by the distillation benchmark."""
+from DynaMOPD.cluster.topology import node_shape
+
+
+def benchmark_nodes(cfg):
+    shape = node_shape(cfg.get("cluster", {}))
+    if shape and any(groups * cfg["group_size"] != len(cfg["benchmark_devices"]) for _, groups in shape):
+        raise ValueError("every benchmark node must supply the declared per-node GPU layout")
+    return len(shape) or 1
+
+
 def layout(cfg, system):
     devices = cfg["benchmark_devices"]
-    total = len(devices)
+    nodes = benchmark_nodes(cfg)
+    total = len(devices) * nodes
     tp, shard = cfg["inference_tp_size"], cfg["group_size"]
-    if not devices or len(set(devices)) != total or min(devices) < 0:
+    if not devices or len(set(devices)) != len(devices) or min(devices) < 0:
         raise ValueError("benchmark_devices must list distinct physical GPUs")
     if min(tp, shard) < 1 or shard % tp or total != cfg["groups"] * shard:
         raise ValueError("inference TP must divide the FSDP group and groups must cover the GPUs")
@@ -18,6 +29,8 @@ def layout(cfg, system):
         actor = total - teacher
         if actor < 1 or teacher < len(cfg["teachers"]) * tp:
             raise ValueError("verl requires an actor pool and at least one TP replica per routed teacher")
+        if nodes > 1 and teacher % len(devices):
+            raise ValueError("multi-node verl benchmark assigns whole nodes to each role pool")
     if actor % shard or teacher % tp:
         raise ValueError("each role's GPU pool must contain complete parallel groups")
     return dict(devices=devices, rollout_tp=tp, rollout_replicas=actor // tp,
@@ -51,7 +64,7 @@ def check_command(cfg, system, command):
     if system == "kdflow":
         flags = iter(command[3:])
         actual = {name.removeprefix("--"): value for name, value in zip(flags, flags, strict=True)}
-        expected = dict(num_nodes=1, num_gpus_per_node=len(spec["devices"]), backend="fsdp2",
+        expected = dict(num_nodes=benchmark_nodes(cfg), num_gpus_per_node=len(spec["devices"]), backend="fsdp2",
                         rollout_tp_size=spec["rollout_tp"], rollout_num_engines=spec["rollout_replicas"],
                         teacher_tp_size=spec["teacher_tp"], teacher_dp_size=spec["teacher_replicas"],
                         teacher_pp_size=1, fsdp_size=spec["fsdp_shard_size"], micro_train_batch_size=spec["microbatch_per_gpu"],
@@ -59,9 +72,11 @@ def check_command(cfg, system, command):
                         rollout_batch_size=cfg["batch_size"], generate_max_len=cfg["max_new_tokens"])
     else:
         actual = dict(arg.lstrip("+").split("=", 1) for arg in command[3:] if "=" in arg)
-        expected = {"trainer.nnodes": 1, "distillation.nnodes": 1,
-                    "trainer.n_gpus_per_node": spec["rollout_tp"]*spec["rollout_replicas"],
-                    "distillation.n_gpus_per_node": spec["teacher_tp"]*spec["teacher_replicas"],
+        actor = spec["rollout_tp"] * spec["rollout_replicas"]
+        teacher = spec["teacher_tp"] * spec["teacher_replicas"]
+        width = len(spec["devices"])
+        expected = {"trainer.nnodes": max(1, actor // width), "distillation.nnodes": max(1, teacher // width),
+                    "trainer.n_gpus_per_node": min(width, actor), "distillation.n_gpus_per_node": min(width, teacher),
                     "actor_rollout_ref.rollout.tensor_model_parallel_size": spec["rollout_tp"],
                     "actor_rollout_ref.actor.fsdp_config.fsdp_size": spec["fsdp_shard_size"],
                     "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu": spec["microbatch_per_gpu"],

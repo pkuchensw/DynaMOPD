@@ -30,7 +30,7 @@ class NativeExecutor(GroupExecutor):
             self.runtime = NodeRuntime(cfg, self.placements, self.tail_tp)
             self.tp_setup, self.teacher_preflight = self.runtime.prepare()
             if self.tail_tp:
-                self.tail_tp.scratch = max(x["wake_bytes"] for x in self.tp_setup)
+                self.tail_tp.configure_meshes(self.tp_setup)
         except BaseException:
             self.close(failed=True)
             raise

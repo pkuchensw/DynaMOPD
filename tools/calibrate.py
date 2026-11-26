@@ -12,7 +12,7 @@ def fit(folder, version):
     if header["backend"] != "sglang_fsdp2":
         raise ValueError("calibration requires native SGLang/FSDP2 worker receipts")
     cfg = {k:v for k,v in header["config"].items()
-           if k not in ("state_dir","log_dir","export_dir","final_version","excluded_ids","eos_ids","staged")}
+           if k not in ("state_dir","log_dir","export_dir","final_version","excluded_ids","sampled_id_limits","eos_ids","staged")}
     # Runs recorded before tensor publication always used the HF export path.
     cfg.setdefault("weight_sync", "disk")
     samples = {r["rid"]:r for r in map(json.loads,(folder/f"samples-v{version}.jsonl").read_text().splitlines())}
@@ -70,7 +70,10 @@ def fit(folder, version):
             if any(x["event"]!=expected for x in receipts) or {x["rid"] for x in receipts}!=set(ids):
                 raise ValueError("missing per-request receipts")
             if op=="decode":
-                observations["decode_step"].append(dt/max(x["end"]-x["start"] for x in receipts))
+                step = dt/max(x["end"]-x["start"] for x in receipts)
+                observations["decode_step"].append(step)
+                if len(ids) == 1 and e.get("peer") is None:
+                    observations["single_decode_step"].append(step)
             else:
                 width = sum(len(samples[x["rid"]]["prompt"])+x["end"]-x["reused_kv_tokens"] for x in receipts)
                 observations["score"].append((max(1,width),dt))
@@ -106,6 +109,22 @@ def fit(folder, version):
         launch = median(t for _,t in lo)
         slope = max(1e-9,(median(t for _,t in hi)-launch)/max(1,long-short))
         cfg["costs"].update(score_base=max(.000001,launch-slope*short),score_token=slope)
+    calibrated = next((e for e in events if e["event"] == "cost_calibration"
+                       and e["source_version"] == version), None)
+    if calibrated:
+        cfg["costs"].update(calibrated["costs"])
+        cfg["sim_worker_profile"] = calibrated["profile"]
+        cfg["sim_teacher_lifecycle"] = "lease"
+        meshes = next((e["meshes"] for e in events if e["event"] == "wide_mesh_ready"), [])
+        if meshes and cfg.get("rollout_tp_expansion"):
+            probes = [m["measured_costs"] for m in meshes]
+            cfg["rollout_tp_expansion"].update(
+                narrow_token_s=median(observations["single_decode_step"] or observations["decode_step"]),
+                wide_token_s=median(p["decode_token_s"] for p in probes),
+                prefill_token_s=median(p["prefill_token_s"] for p in probes),
+                enter_s=median(p["wake_s"] for p in probes), exit_s=median(p["sleep_s"] for p in probes),
+                wake_bytes_per_gpu=max(m["wake_bytes"] for m in meshes),
+                idle_bytes_per_gpu=max(max(m["idle_device_bytes"]) for m in meshes))
     return cfg
 
 

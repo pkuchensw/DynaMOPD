@@ -191,6 +191,7 @@ class Inference:
     def __init__(self, cfg):
         self.cfg = cfg
         self.excluded_ids = frozenset(cfg.get("excluded_ids", ()))
+        self.sampled_id_limits = cfg.get("sampled_id_limits")
         self.owned = {}
         self.cached = {}
 
@@ -212,9 +213,13 @@ class Inference:
             entries = meta["output_token_logprobs"]
             if not ids or [entry[1] for entry in entries] != ids:
                 raise RuntimeError("misaligned SGLang output logprobs")
-            unexpected = self.excluded_ids.intersection(ids)
+            if self.sampled_id_limits is None:
+                unexpected = self.excluded_ids.intersection(ids)
+            else:
+                limit = self.sampled_id_limits[x["teacher"]]
+                unexpected = {token for token in ids if not 0 <= token < limit}
             if unexpected:
-                raise ValueError(f"{x['rid']} sampled IDs outside the teachers' shared mapping: {sorted(unexpected)}")
+                raise ValueError(f"{x['rid']} sampled IDs unsupported for teacher {x['teacher']}: {sorted(unexpected)}")
             start = len(x["tokens"])
             finish = None
             if ids[-1] in self.cfg["eos_ids"]:

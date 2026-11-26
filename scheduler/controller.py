@@ -29,6 +29,7 @@ class Controller:
         self.groups = [Group(i) for i in range(cfg["groups"])]
         self.cost = Costs(cfg)
         self.history = defaultdict(list)
+        self.capped_lengths = defaultdict(list)
         self.prior_lengths = {}
         self.max_length_ema = None
         self.live_count = 0
@@ -63,14 +64,14 @@ class Controller:
         # A request can outlive the forecast. Then use its conditional residual again.
         if self.live_count == 1 and self.max_length_ema is not None and current < self.max_length_ema:
             return min(row.limit-current, max(1., self.max_length_ema-current))
-        seen = self.history[row.teacher]
+        seen = self.prior_lengths.get((row.teacher, row.limit)) or self.history[row.teacher]
         start = bisect_right(seen, current)
         middle = (start + len(seen)) // 2
         if start < len(seen):
             lower = (start + len(seen) - 1) // 2
             estimate = (seen[lower]+seen[middle])/2-current
         else:
-            estimate = self.cfg["tail_prior"]
+            estimate = row.limit-current if self.cost.measuring else self.cfg["tail_prior"]
         return min(row.limit-current, max(1., estimate))
 
     def emit(self, event, **fields):
@@ -145,15 +146,17 @@ class Controller:
             if any(gpu in self.holds or gpu in self.holds.values() for gpu in a.devices):
                 raise RuntimeError("TP handoff conflicts with a pending request migration")
             if a.kind == "tp_expand":
-                live = [row for row in self.rows.values() if not row.finish]
+                live = [row for row in self.rows.values() if row.owner in a.devices and not row.finish]
                 allow_trainer = getattr(model,"borrow_trainer",False)
-                if (self.tp_pair or len(live) != 1 or live[0].owner != a.gpu or not live[0].tokens
+                resizing = any(g.busy and g.busy.kind in ("tp_expand", "tp_shrink") for g in self.groups)
+                if (self.tp_pair or resizing or len(live) != 1 or live[0].owner != a.gpu or not live[0].tokens
+                        or [x["rid"] for x in a.payload["items"]] != [live[0].rid]
                         or self.groups[a.gpu].role != "rollout" or (not allow_trainer and
                         (a.peer in self.training_groups or a.peer in (self.trainer,self.required_trainer)))
                         or (self.groups[a.peer].role not in {"rollout","standby",*self.cfg["teachers"]}
                             and not (allow_trainer and self.groups[a.peer].role == "train"))
                         or any(self.groups[i].version != self.version for i in a.devices)):
-                    raise RuntimeError("TP expansion requires the last live rollout and an available donor")
+                    raise RuntimeError("TP expansion requires a single owned rollout on the pair and a free donor")
             elif self.tp_pair != a.devices:
                 raise RuntimeError("operation does not own the wide TP layout")
             self.submit(a if a.kind == "tp_shrink" else self.materialize(a))
@@ -212,7 +215,7 @@ class Controller:
             role = a.payload.get("teacher", "train")
             if a.kind == "score" and a.gpu in self.training_groups:
                 raise RuntimeError("cannot release uncommitted gradients for scoring")
-            if a.kind == "score" and self.groups[a.gpu].role != role:
+            if a.kind == "score" and self.groups[a.gpu].role != role and not self.cost.measuring:
                 # Acquire only the engine lease. A resident replica can still serve
                 # these prefixes while this group loads; replan on its ready receipt.
                 self.submit(Action("switch", a.gpu, a.version, {"role": role}))
@@ -287,6 +290,10 @@ class Controller:
             for rid in value.get("peer_evicted", []):
                 self.rows[rid].kv.pop(a.peer, None)
         elif a.kind == "switch":
+            if (self.cost.measuring and a.payload.get("publish_from") is None and
+                    value["old"] != value["new"]):
+                self.cost.observe(("switch_group", g.gpu, value["old"], value["new"]), duration)
+                self.cost.observe(("switch_to", value["new"]), duration)
             if value.get("teacher_prepare_s") is not None:
                 self.cost.observe("teacher_prepare", value["teacher_prepare_s"])
             if "teacher_rank_release_s" in value:
@@ -345,6 +352,8 @@ class Controller:
                     self.live_count -= 1
                 if row.finish == "eos":
                     insort(self.history[row.teacher], len(row.tokens))
+                elif row.finish == "length":
+                    insort(self.capped_lengths[row.teacher], len(row.tokens))
                 self.emit("prefix", rid=rid, gpu=g.gpu, end=len(row.tokens), start=update["start"],
                           finish=row.finish, teacher=row.teacher)
             if a.peer is None:
@@ -366,7 +375,8 @@ class Controller:
                           end=score["end"], before_eos=row.finish is None, reused_kv_tokens=score["reused"],
                           cached_on=row.kv, ready=row.ready)
             self.cost.observe("score_token", duration/sum(len(x["tokens"])-x["start"] for x in items))
-            self.cost.observe("score_base", min(duration, self.cost.get("score_base")*2))
+            if not self.cost.measuring:
+                self.cost.observe("score_base", min(duration, self.cost.get("score_base")*2))
             self.cost.observe_score(a.payload["teacher"], max(loads), duration)
         elif a.kind == "move":
             if value["accepted"]:
@@ -400,11 +410,13 @@ class Controller:
             if (value["owner"] != self.trainer or value["group_tokens"] != self.group_tokens[g.gpu]
                     or value["global_tokens"] != sum(self.group_tokens)):
                 raise RuntimeError("gradient reduction disagrees with settled training receipts")
-            self.cost.observe("replica_reduce", duration)
+            if not self.cost.measuring:
+                self.cost.observe("replica_reduce", duration)
         elif a.kind == "commit":
             if value["published"] != self.version+1 or value["tokens"] != sum(self.group_tokens):
                 raise RuntimeError("incorrect published version")
             self.commit_result = value
+            self.cost.observe("optimizer_step", value.get("optimizer_and_probe_s", duration))
             if value.get("durable",True)!=a.payload["durable"]:
                 raise RuntimeError("checkpoint durability receipt disagrees with commit")
             # Only this group holds current Adam moments while the job is live.
@@ -422,6 +434,18 @@ class Controller:
         # Early completions within the current round are right-censored towards
         # short responses. Freeze completed-round distributions at publication.
         self.prior_lengths = {role: tuple(lengths) for role, lengths in self.history.items()}
+        for role, limit in {(row.teacher, row.limit) for row in rows}:
+            # Reaching an old cap >= this limit tells us exactly how much work
+            # that trajectory would have taken at this cap. Shorter censored
+            # responses give no exact length for the new limit.
+            capped = self.capped_lengths[role]
+            count = len(capped) - bisect_right(capped, limit-1)
+            if count:
+                seen = self.prior_lengths.get(role, ())
+                self.prior_lengths[role, limit] = tuple(min(n,limit) for n in seen) + (limit,)*count
+        place = getattr(self.policy, "place_rollouts", None)
+        if place:
+            place(rows, self.cfg, self.prior_lengths)
         self.live_count = len(rows)
         if (len(self.rows) != len(rows) or set(r.owner for r in rows) != set(range(len(self.groups)))
                 or any(r.version != version for r in rows)):
@@ -483,11 +507,14 @@ class Controller:
             # Every same-rank NCCL lane has the same fixed membership, including
             # groups which finished the round running inference and contribute zero.
             self.decision_id += 1
+            reduction_start = self.backend.now()
             for g in self.groups:
                 self.submit(Action("reduce_grads", g.gpu, version,
                                    {"owner": self.trainer, "counts": self.group_tokens.copy()}))
             while any(g.busy for g in self.groups):
                 self.receive()
+            if self.cost.measuring:
+                self.cost.observe("replica_reduce", self.backend.now()-reduction_start)
         next_version = version+1
         interval = self.cfg.get("checkpoint_interval", 1)
         save_hf = next_version == self.cfg.get("final_version") or (interval > 0 and next_version % interval == 0)
@@ -505,11 +532,14 @@ class Controller:
         self.submit(Action("commit", self.trainer, version, commit))
         self.receive()
         self.decision_id += 1
+        publish_start = self.backend.now()
         for g in self.groups:
             self.submit(Action("switch", g.gpu, version, {"role":"rollout","load_version":version+1,
                                                          "publish_from": self.trainer}))
         while any(g.busy for g in self.groups):
             self.receive()
+        if self.cost.measuring:
+            self.cost.observe("rollout_publication", self.backend.now()-publish_start)
         self.emit("rollout_barrier", loaded_version=version+1, groups=len(self.groups))
         self.max_length_ema = next_ema
         self.emit("round_end", eos=sum(r.finish=="eos" for r in rows), trained=sum(r.trained for r in rows), truncated=sum(r.finish=="length" for r in rows),

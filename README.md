@@ -176,7 +176,13 @@ python -m DynaMOPD.run --simulate --policy merge --out runs/my-sim-merge
 
 多系统对照的 HTML 回放统一使用每个系统一张时间线。生成、长尾等待、评分、换岗、训练和发布共用卡行及时间轴，轮询重建的区间在图中标注。[时间线生成器](tools/scenario_timeline.py)
 
+已有论文数据包时，可在仓库父目录运行 `python -m DynaMOPD.tools.paper_report /path/to/DynaMOPD-paper-data.zip`。生成的离线 HTML 首页按场景显示加速比，点选场景可在同一秒轴上查看各系统的逐卡活动。[报告生成器](tools/paper_report.py)
+
 H20 配置在 CLI 使用 `--simulate` 时默认运行 `cost_search`。每个决策将自然排空和可行的迁移、评分组、训练微批布局按预计剩余轮时比较。已有五组真机回执的留出误差、KV 样本覆盖和两种负载的同 token 回放结果见[模拟器标定与动作搜索](docs/simulator-cost-search.md)。
+
+真实 SGLang/FSDP2 作业的首轮也执行训练。调度器从空成本表开始，按空闲卡组数分配已有的前缀和就绪样本。每个批次在派发时认领样本。首轮结束后，`cost_calibration` 记录本作业测得的评分、训练、换岗、归约与权重发布成本。下一轮使用这些观测搜索动作组合，每轮结束后继续校准。同一配置文件里用于 SimRL 重放的历史成本只描述模拟硬件。
+
+启用跨节点分片副本和张量发布时，训练 rank 先同步更新后的主参数；每个节点再从本地的主参数分片构造可训练权重的 BF16 rollout 桶。含冻结参数或缓冲区的桶由权威副本分发。`rollout_lane_payload_bytes` 统计发布阶段每条跨副本通道分发的权重字节数；梯度归约和主参数同步分别计量。
 
 要按本机实测成本重放，可用 `python -m DynaMOPD.tools.calibrate runs/my-first-run --version 0 --output runs/h20-costs.json`。将生成的配置作为模拟命令的 `--config`。以其他轮次检验预测时，标定输入应仅含已经完成的历史轮次。
 

@@ -1,10 +1,12 @@
 """Receding-horizon list scheduling over a bounded set of alternative resource assignments."""
 from collections import defaultdict
 from bisect import bisect_right
+from copy import copy
 from dataclasses import dataclass
 from hashlib import blake2s
 import heapq
 from itertools import chain
+from math import isqrt
 from time import perf_counter
 
 from .protocol import Action
@@ -77,15 +79,16 @@ def batches(entries, limit, budget, size, packed):
 
 
 class Forecast:
-    def __init__(self, s, classes):
+    def __init__(self, s, classes, *, early_training=True):
         self.s, self.cfg = s, s.cfg
         cfg = self.cfg
+        self.training_barrier = cfg.get("phase_barriers", False) or not early_training
         self.n = len(s.groups)
         self.lanes = cfg.get("group_size", 1) // cfg.get("inference_tp_size", cfg.get("group_size", 1))
         self.classes = classes
         self.profile = cfg.get("sim_worker_profile", {})
         fallback = cfg["costs"]["score_base"], cfg["costs"]["score_token"]
-        self.score_coeffs = {role: self.profile.get("score", {}).get(role) or s.cost.score_coefficients(role, fallback)
+        self.score_coeffs = {role: s.cost.score_coefficients(role, self.profile.get("score", {}).get(role) or fallback)
                              for role in cfg["teachers"]}
         self.now = s.now()
         self.prepare_s = s.cost.values.get("teacher_prepare", self.profile.get("teacher_prepare_s",
@@ -96,6 +99,8 @@ class Forecast:
             cfg.get("engine") == "sglang_fsdp2" and cfg.get("sim_teacher_lifecycle", "lease") == "lease") else set()
         self.live = [[] for _ in s.groups]
         self.left = {}
+        self.row_order = {rid: i for i, rid in enumerate(s.rows)}
+        self.backfills = {}
         self.starts = {r.rid: len(r.labels) for r in s.rows.values()}
         self.available = [0.] * self.n
         self.score_done = {}
@@ -115,7 +120,9 @@ class Forecast:
                 self.live[r.owner].append(r)
                 self.left[r.rid] = max(1, round(s.remaining(r)))
         if cfg.get("length_forecast") == "conditional_quantiles" and sum(map(len, self.live)) > 1:
-            for rows in self.live:
+            cohorts = ([list(chain.from_iterable(self.live))] if
+                       cfg.get("policy_options", {}).get("cluster_quantiles", True) else self.live)
+            for rows in cohorts:
                 self.estimate_quantiles(rows, s.prior_lengths)
         self.train_widths = {}
         self.train_rows = {True: [], False: []}
@@ -167,9 +174,9 @@ class Forecast:
         # slowest lane. Approximate the order statistics of each live cohort.
         cohorts = defaultdict(list)
         for row in rows:
-            cohorts[(row.teacher, self.lane(row), len(row.tokens), row.limit)].append(row)
-        for (role, _, emitted, limit), members in cohorts.items():
-            lengths = history.get(role, ())
+            cohorts[(row.teacher, len(row.tokens), row.limit)].append(row)
+        for (role, emitted, limit), members in cohorts.items():
+            lengths = history.get((role, limit), history.get(role, ()))
             start = bisect_right(lengths, emitted)
             count = len(lengths)-start
             if count:
@@ -218,6 +225,9 @@ class Forecast:
             else:
                 t = self.s.cost.switch(old, new)
                 unload = self.cfg.get("sim_teacher_release_s", {}).get(old, 0.)
+            if self.s.cost.measuring and not publish:
+                values = self.s.cost.values
+                t = values.get(("switch_group",gpu,old,new),values.get((old,new),values.get(("switch_to",new),t)))
             self.switch_cache[cache_key] = t, cell.get("device") if cell else None, unload
         t, device, unload = self.switch_cache[cache_key]
         if self.dedicated and old != new:
@@ -290,6 +300,8 @@ class Forecast:
         return base + (0. if deferred else a + b*tokens) + self.s.transfer_penalty(src, dst)
 
     def pairs(self):
+        if self.s.cost.measuring and "move_base" not in self.s.cost.values:
+            return
         s = self.s
         for src, rows in enumerate(self.live):
             if not rows or any(not r.tokens and r.rid not in self.inflight_tokens for r in rows):
@@ -312,7 +324,25 @@ class Forecast:
                 if survives and max(used) <= self.cfg.get("engine_kv_tokens", float("inf")):
                     yield src, dst
 
-    def layout(self, pair, deferred=False):
+    def merge_backfill(self, pair):
+        """Find the largest decode chunk predicted to fit before the peer's safe point."""
+        ready = [g for g in pair if not self.s.groups[g].busy]
+        if len(ready) != 1:
+            return None
+        gpu, = ready
+        other = pair[1] if gpu == pair[0] else pair[0]
+        rows = self.live[gpu][:self.cfg["decode_batch"]]
+        cold = {r.rid for r in rows if r.deferred_prefill}
+        lo, hi = 0, min(self.cfg["quantum"], max(self.left[r.rid] for r in rows))
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self.decode_wave(rows, self.left, mid, cold) <= self.available[other]:
+                lo = mid
+            else:
+                hi = mid-1
+        return (gpu, lo) if lo else None
+
+    def layout(self, pair, deferred=False, backfill=None):
         cfg = self.cfg
         free = self.available.copy()
         live = [rows.copy() for rows in self.live]
@@ -330,13 +360,35 @@ class Forecast:
                         eos[rid] = free[g.gpu]
         if pair:
             src, dst = pair
-            free[src] = free[dst] = max(free[src], free[dst]) + self.move_cost(src, dst, deferred)
+            if backfill:
+                i, steps = backfill
+                wave = live[i][:cfg["decode_batch"]]
+                free[i] += self.decode_wave(wave, left, steps, cold)
+                for r in wave:
+                    cold.discard(r.rid)
+                    left[r.rid] = max(0, left[r.rid]-steps)
+                    next_prefix[r.rid] = len(r.tokens)+self.left[r.rid]-left[r.rid], free[i]
+                    if not left[r.rid]:
+                        eos[r.rid] = free[i]
+                capacity = [0] * self.lanes
+                for r in chain(live[src], live[dst]):
+                    if left[r.rid]:
+                        capacity[self.lane(r)] += len(r.prompt)+len(r.tokens)+self.left[r.rid]-left[r.rid]+cfg["quantum"]
+                if max(capacity) > cfg.get("engine_kv_tokens", float("inf")):
+                    return None
+            install = self.move_cost(src, dst, deferred)
+            if backfill and backfill[0] == src and not deferred:
+                slope = self.profile.get("move_install", [0., self.s.cost.get("prefill_token")])[1]
+                before = sum(len(r.prompt)+len(r.tokens) for r in live[src])
+                after = sum(len(r.prompt)+len(r.tokens)+self.left[r.rid]-left[r.rid] for r in live[src] if left[r.rid])
+                install += slope*(after-before)
+            free[src] = free[dst] = max(free[src], free[dst]) + max(0.,install)
             for r in live[src]:
                 if deferred:
                     cold.add(r.rid)
                 else:
                     cold.discard(r.rid)
-            live[dst].extend(live[src])
+            live[dst] = sorted(chain(live[dst], live[src]), key=lambda r: self.row_order[r.rid])
             live[src] = []
         for i, rows in enumerate(live):
             active = [r for r in rows if left[r.rid]]
@@ -357,72 +409,98 @@ class Forecast:
 
     def layouts(self, pairs):
         s, model = self.s, self.s.tp_model
-        rows = list(chain.from_iterable(self.live))
         base, eos, prefixes = self.layout(None)
+        if model and "decode" not in self.profile and "decode_rpc" not in self.profile:
+            for i, rows in enumerate(self.live):
+                if len(rows) == 1 and not s.groups[i].busy and rows[0].tokens:
+                    r, = rows
+                    context = len(r.prompt)+len(r.tokens)
+                    base[i] = eos[r.rid] = model.predict(context, self.left[r.rid], model.base)
+                    count = min(self.left[r.rid], s.cfg["quantum"])
+                    prefixes[r.rid] = len(r.tokens)+count, model.predict(context, count, model.base)
+        self.tp_checks = defaultdict(int)
         if not s.tp_pair:
-            if model and len(rows) == 1 and not s.groups[rows[0].owner].busy:
-                r = rows[0]
-                end = model.predict(len(r.prompt)+len(r.tokens), self.left[r.rid], model.base)
-                base[r.owner] = eos[r.rid] = end
-                count = min(self.left[r.rid], s.cfg["quantum"])
-                prefixes[r.rid] = len(r.tokens)+count, model.predict(len(r.prompt)+len(r.tokens), count, model.base)
             yield "natural", None, base, eos, prefixes
             for pair in pairs:
-                yield "merge", pair, *self.layout(pair)
-                if s.cfg.get("deferred_migration_prefill", False) and s.cfg.get("engine") == "sglang_fsdp2":
-                    yield "merge_deferred", pair, *self.layout(pair, deferred=True)
-        if not model or s.holds:
+                fill = self.merge_backfill(pair) if self.allow_backfill else None
+                deferred_ok = s.cfg.get("deferred_migration_prefill", False) and s.cfg.get("engine") == "sglang_fsdp2"
+                for deferred in ([False, True] if deferred_ok else [False]):
+                    mode = "merge_deferred" if deferred else "merge"
+                    yield mode, pair, *self.layout(pair, deferred)
+                    if fill:
+                        extra = self.layout(pair, deferred, fill)
+                        if extra is not None:
+                            self.backfills[(mode+"_backfill", pair)] = fill
+                            yield mode+"_backfill", pair, *extra
+        if not model or not self.allow_wide:
+            self.tp_checks["profile_missing" if not model else "disabled"] += 1
             return
-        if s.tp_pair and not rows:
-            leader, peer = s.tp_pair
-            delay = model.transition(leader, peer, s.groups[peer].role, 0, False)["transition_s"]
-            base[leader] = base[peer] = max(base[leader], base[peer])+delay
-            yield "shrink", s.tp_pair, base, eos, prefixes
+        if not s.tp_pair and (s.holds or any(g.busy and g.busy.kind in ("tp_expand", "tp_shrink") for g in s.groups)):
+            self.tp_checks["handoff_in_progress"] += 1
             return
-        # Each executable wide layout serves one live trajectory on a local pair.
-        if len(rows) != 1 or not rows[0].tokens:
-            return
-        r = rows[0]
-        leader = r.owner
-        owner = s.groups[leader]
-        context = len(r.prompt)+len(r.tokens)
-        for peer in ([s.tp_pair[1]] if s.tp_pair else model.partners[leader]):
-            donor = s.groups[peer]
+        pairs = ([s.tp_pair] if s.tp_pair else
+                 ((leader, peer) for leader, rows in enumerate(self.live) if rows for peer in model.partners[leader]))
+        for leader, peer in pairs:
+            rows, donor = self.live[leader], s.groups[peer]
+            leave = model.transition(leader, peer, donor.role, 0, False)["transition_s"]
+            if s.tp_pair and not rows:
+                free = base.copy()
+                free[leader] = free[peer] = max(self.available[leader], self.available[peer])+leave
+                yield "shrink", (leader, peer), free, eos, prefixes
+                continue
+            if len(rows) != 1 or self.live[peer]:
+                self.tp_checks["pair_owns_multiple"] += 1
+                continue
+            r, = rows
+            if not r.tokens:
+                self.tp_checks["no_committed_prefix"] += 1
+                continue
+            owner = s.groups[leader]
             if not s.tp_pair:
-                trainer_donor = peer in s.training_groups or peer in (s.trainer, s.required_trainer)
-                retains_donor = getattr(model, "preserves_donor", False)
-                eligible_roles = {"rollout", "standby", *s.cfg["teachers"]}
-                if getattr(model, "borrow_trainer", False):
-                    eligible_roles.add("train")
-                elif trainer_donor:
+                if ((owner.busy and owner.busy.kind != "decode")
+                        or (donor.busy and donor.busy.kind not in ("score", "train"))):
+                    self.tp_checks["role_transition"] += 1
                     continue
-                if owner.busy or donor.busy or donor.role not in eligible_roles:
+                trainer = peer in s.training_groups or peer in (s.trainer, s.required_trainer)
+                allow_train = getattr(model, "borrow_trainer", False)
+                roles = {"rollout", "standby", *s.cfg["teachers"]}
+                if allow_train:
+                    roles.add("train")
+                if donor.role not in roles or (trainer and not allow_train) or peer in s.queued_work:
+                    self.tp_checks["donor_role"] += 1
                     continue
                 sizes = s.cfg.get("sim_role_bytes", {})
-                extra = max(0, sizes.get("rollout", 16*2**30)-sizes.get(donor.role, 0 if donor.role == "standby" else 16*2**30))
-                if (min(owner.free_bytes, donor.free_bytes-(0 if retains_donor else extra)) < s.cfg["memory_margin"]+model.scratch or
+                extra = (0 if getattr(model, "preserves_donor", False) else
+                         max(0, sizes.get("rollout", 16*2**30)-sizes.get(donor.role, 0 if donor.role == "standby" else 16*2**30)))
+                if (min(owner.free_bytes, donor.free_bytes-extra) < s.cfg["memory_margin"]+model.scratch or
                         len(r.prompt)+r.limit-1 > model.context_capacity):
+                    self.tp_checks["capacity"] += 1
                     continue
+            advanced = self.inflight_tokens.get(r.rid, 0)
+            remaining = self.left[r.rid] - advanced
+            if not remaining and not s.tp_pair:
+                self.tp_checks["predicted_finish_in_flight"] += 1
+                continue
+            context = len(r.prompt)+len(r.tokens)+advanced
             start = max(self.available[leader], self.available[peer])
-            remaining = self.left[r.rid]
-            if owner.busy and owner.busy.kind == "decode":
-                remaining = max(0, remaining-s.cfg["quantum"])
             enter = 0. if s.tp_pair else model.transition(leader, peer, donor.role, context-1, True)["transition_s"]
-            leave = model.transition(leader, peer, donor.role, 0, False)["transition_s"]
             end = start+enter+(model.predict(context, remaining, model.wide) if remaining else 0.)
-            free = base.copy()
+            free, wide_eos, next_prefix = base.copy(), eos.copy(), prefixes.copy()
             free[leader] = free[peer] = end+leave
+            wide_eos[r.rid] = end
             count = min(s.cfg["quantum"], self.left[r.rid])
-            prefix_at = (self.available[leader] if owner.busy else start+enter+model.predict(context, count, model.wide))
-            yield "wide", (leader, peer), free, {r.rid: end}, {r.rid: (len(r.tokens)+count, prefix_at)}
+            if not advanced:
+                next_prefix[r.rid] = len(r.tokens)+count, start+enter+model.predict(context, count, model.wide)
+            self.tp_checks["evaluated"] += 1
+            yield "wide", (leader, peer), free, wide_eos, next_prefix
             if s.tp_pair and not owner.busy:
-                moved = max(0, context-1-s.tp_prefix_tokens)
-                handoff = model.transition(leader, peer, donor.role, moved, False)["transition_s"]
-                free = base.copy()
+                suffix = max(0, context-1-s.tp_prefix_tokens)
+                handoff = model.transition(leader, peer, donor.role, suffix, False)["transition_s"]
+                free, narrow_eos, next_prefix = base.copy(), eos.copy(), prefixes.copy()
                 free[peer] = handoff
-                free[leader] = handoff+model.predict(context, remaining, model.base)
-                prefix_at = handoff+model.predict(context, count, model.base)
-                yield "shrink", s.tp_pair, free, {r.rid: free[leader]}, {r.rid: (len(r.tokens)+count, prefix_at)}
+                free[leader] = narrow_eos[r.rid] = handoff+model.predict(context, remaining, model.base)
+                next_prefix[r.rid] = len(r.tokens)+count, handoff+model.predict(context, count, model.base)
+                yield "shrink", (leader, peer), free, narrow_eos, next_prefix
 
     def jobs(self, eos, next_prefix, score_batch, defer):
         cfg = self.cfg
@@ -468,7 +546,7 @@ class Forecast:
                 jobs.append(ScoreJob(max(x.release for x in batch), stage, role, batch, cold, loads, credits, retains, items))
         return sorted(jobs, key=lambda x: (x.release, x.stage))
 
-    def project(self, free, eos, jobs, scorers, train_batch, invalid_kv, preload=False):
+    def project(self, free, eos, jobs, scorers, train_batch, invalid_kv, preload=False, home=None):
         s, cfg = self.s, self.cfg
         free, roles = free.copy(), self.role.copy()
         states = [self.state(i) for i in range(self.n)]
@@ -506,7 +584,8 @@ class Forecast:
                     service = base + slope*max(loads)
                 activated = at + self.switch(g, roles[g], role, state=states[g], at=at)
                 return max(release, activated) + service
-            end, gpu = min((finish(g), g) for g in scorers)
+            candidates = home.get(role, scorers) if home else scorers
+            end, gpu = min((finish(g), g) for g in candidates)
             if gpu not in first:
                 first[gpu] = (Action("score", gpu, s.version, dict(teacher=role, items=job.action_items))
                               if job.action_items and not (cfg.get("phase_barriers") and self.live_generation) else None)
@@ -535,7 +614,7 @@ class Forecast:
                 ordered = sorted(ordered, key=lambda rid: release_at.get(rid, 0.))
             for batch, cost in self.train_batches(ordered, train_batch):
                 release = 0. if ready_now else release_at.get(batch[-1], 0.)
-                if cfg.get("phase_barriers"):
+                if self.training_barrier:
                     release = max(release, service_end)
                 candidates = []
                 reserved = participants if owner is None or owner in participants else participants | {owner}
@@ -548,7 +627,7 @@ class Forecast:
                 end, gpu = min(candidates)
                 if gpu not in first:
                     first[gpu] = (Action("train", gpu, s.version, dict(items=[dict(rid=rid) for rid in batch]))
-                                  if ready_now and not (cfg.get("phase_barriers") and self.service_pending) else None)
+                                  if ready_now and not (self.training_barrier and self.service_pending) else None)
                 participants.add(gpu)
                 owner = gpu if owner is None else owner
                 set_role(gpu, "train", max(release, free[gpu]), owner=gpu == owner)
@@ -558,6 +637,10 @@ class Forecast:
             set_role(owner, "train", free[owner], owner=True)
             free[owner] += duration
         end = max(free)
+        if s.cost.measuring:
+            if participants - {owner}:
+                end += s.cost.values.get("replica_reduce", s.cost.get("rollout_publication"))
+            return end + s.cost.get("optimizer_step") + s.cost.get("rollout_publication"), first
         if participants - {owner}:
             end += self.profile.get("reduce", s.cost.get("replica_reduce"))
         publish = [self.switch(i, role, "rollout", publish=True, owner=i == owner, state=states[i]) for i, role in enumerate(roles)]
@@ -582,6 +665,14 @@ class CostSearchPolicy:
     plans_standby = True
 
     def __init__(self, options):
+        self.allow_wide = options.get("allow_tp_expansion", True)
+        self.allow_backfill = options.get("merge_backfill", True)
+        self.live_prefix_scoring = options.get("live_prefix_scoring", True)
+        self.early_training = options.get("early_training", True)
+        self.placement = options.get("rollout_placement", "round_robin")
+        self.route_pools = options.get("route_pools", True)
+        if self.placement not in ("balanced", "round_robin"):
+            raise ValueError("rollout_placement must be balanced or round_robin")
         self.max_pairs = options.get("max_pairs", 12)
         self.batch_sizes = options.get("train_batch_sizes", [])
         self.score_sizes = options.get("score_batch_sizes", [])
@@ -590,16 +681,63 @@ class CostSearchPolicy:
         self.group_sets = options.get("score_group_sets", [])
         self.classes = None
 
+    def place_rollouts(self, rows, cfg, history):
+        if self.placement == "round_robin" or (cfg.get("first_round_calibration") and not cfg.get("sim_worker_profile")):
+            return
+        groups = cfg["groups"]
+        width = cfg.get("group_size", 1)
+        replicas = width // cfg.get("inference_tp_size", width)
+        profile = cfg.get("sim_worker_profile", {})
+        coeffs = profile.get("decode_rpc", profile.get("decode"))
+        means = {}
+        def demand(row):
+            key = row.teacher, row.limit
+            if key not in means:
+                prior = history.get(key) or history.get(row.teacher) or (cfg.get("tail_prior",row.limit),)
+                means[key] = sum(min(n,row.limit) for n in prior) / len(prior)
+            n, prompt = means[key], len(row.prompt)
+            if coeffs:
+                return coeffs[2]*n + coeffs[3]*n*(prompt+(n-1)/2) + coeffs[4]*prompt
+            return cfg["costs"]["decode_step"]*n + cfg["costs"]["prefill_token"]*prompt
+
+        lanes = [[] for _ in range(replicas)]
+        for row in rows:
+            lanes[row.seed // groups % replicas].append((demand(row), row))
+        for entries in lanes:
+            slots, before, after = [0]*groups, [0.]*groups, [0.]*groups
+            for work, row in entries:
+                slots[row.owner] += 1
+                before[row.owner] += work
+            assignment = []
+            for work, row in sorted(entries, key=lambda item: -item[0]):
+                gpu = min((i for i in range(groups) if slots[i]), key=after.__getitem__)
+                after[gpu] += work
+                slots[gpu] -= 1
+                assignment.append((row, gpu))
+            if max(after) < max(before):
+                for row, gpu in assignment:
+                    row.owner = gpu
+
     def plan(self, s):
         if all(g.busy for g in s.groups):
+            return
+        if s.cost.measuring and not s.cfg.get("sim_worker_profile"):
+            from .calibration import calibration_round
+            yield from calibration_round(s, self.max_pairs > 0, self.early_training, self.live_prefix_scoring)
             return
         started = perf_counter()
         if self.classes is None:
             self.classes = engine_classes(s.cfg)
-        f = Forecast(s, self.classes)
+        f = Forecast(s, self.classes, early_training=self.early_training)
+        f.allow_wide = self.allow_wide
+        f.allow_backfill = self.allow_backfill
         eligible = tuple(g.gpu for g in s.groups if g.gpu not in s.training_groups)
         pools = list(dict.fromkeys([eligible, *((i,) for i in eligible),
                                     *(tuple(j for j in eligible if j != i) for i in eligible)]))
+        if s.cost.measuring:
+            # Earliest-finish assignment already compares every eligible worker.
+            # Re-enumerating all singleton and leave-one-out pools stalls dispatch.
+            pools = [eligible]
         for preset in self.group_sets:
             if not preset or any(type(i) is not int or not 0 <= i < f.n for i in preset):
                 raise ValueError("score_group_sets must contain valid group ids")
@@ -607,17 +745,74 @@ class CostSearchPolicy:
             if pool and pool not in pools:
                 pools.append(pool)
         sizes = sorted({s.cfg["microbatch"], *(n for n in self.batch_sizes if n <= s.cfg["microbatch"])})
+        if s.cost.measuring:
+            # Include a schedule that shares the currently ready tail among
+            # all legally idle trainers, beside the normal full microbatch.
+            idle_trainers = sum(not g.busy and not f.live[g.gpu] for g in s.groups)
+            ready = len(f.train_rows[True])
+            if ready and idle_trainers > 1:
+                split = min(s.cfg["microbatch"], (ready+idle_trainers-1)//idle_trainers)
+                sizes = sorted(set(sizes) | {split})
         holding = next(iter(s.holds.items()), None)
-        pairs = sorted(f.pairs(), key=lambda p: f.move_cost(*p))[:self.max_pairs]
+        if s.cost.measuring and not holding:
+            # Bound placement alternatives as the number of groups grows. Rank
+            # both the displaced work and the destination's remaining decode.
+            def merge_rank(pair):
+                src, dst = pair
+                return (f.move_cost(src,dst) + max(f.available[src],f.available[dst])
+                        + f.step * (max(f.left[r.rid] for r in f.live[dst])
+                                    - max(f.left[r.rid] for r in f.live[src])))
+            pairs = sorted(f.pairs(),key=merge_rank)[:min(self.max_pairs,isqrt(len(s.groups)))]
+        else:
+            pairs = sorted(f.pairs(),key=lambda p:f.move_cost(*p))[:self.max_pairs]
         if holding:
             pairs = [holding] if holding in f.pairs() else []
+        idle = [g.gpu for g in s.groups if not g.busy]
+        wide_possible = s.tp_model and self.allow_wide and any(
+            len(rows)==1 and rows[0].tokens and any(not f.live[j] for j in s.tp_model.partners[i])
+            for i, rows in enumerate(f.live))
+        if not (pairs or holding or s.tp_pair or wide_possible) and all(f.live[i] for i in idle):
+            s.record_decode_only(groups=idle, tp_profile=s.tp_model is not None, planner_wall_s=perf_counter()-started)
+            for i in idle:
+                yield Action("decode", i, s.version, dict(items=[dict(rid=r.rid) for r in
+                             f.live[i][:s.cfg["decode_batch"]]], steps=s.cfg["quantum"]))
+            return
+        # Every executable layout keeps decoding these groups. Launch the RPCs
+        # before the combinatorial service search, preserving its settled view.
+        reserved = set(chain.from_iterable(pairs)) | set(holding or ()) | set(s.tp_pair or ())
+        if wide_possible:
+            for i, rows in enumerate(f.live):
+                if len(rows) == 1 and rows[0].tokens:
+                    for j in s.tp_model.partners[i]:
+                        if not f.live[j]:
+                            reserved.update((i,j))
+        early = [i for i in idle if f.live[i] and i not in reserved]
+        if early:
+            snapshot = copy(s)
+            snapshot.groups = tuple(copy(g) for g in s.groups)
+            f.s = snapshot
+            for i in early:
+                yield Action("decode", i, s.version, dict(items=[dict(rid=r.rid) for r in
+                             f.live[i][:s.cfg["decode_batch"]]], steps=s.cfg["quantum"]))
         score_sizes = sorted({s.cfg["score_batch"], *(n for n in self.score_sizes if n <= s.cfg["score_batch"])})
+        if s.cost.measuring:
+            backlog = defaultdict(int)
+            for row in s.rows.values():
+                if not row.scoring and not row.discarded and len(row.tokens)>len(row.labels):
+                    backlog[row.teacher] += 1
+            available = [g for g in s.groups if not g.busy and not f.live[g.gpu] and g.gpu in eligible]
+            if backlog and len(available)>1:
+                split = (max(backlog.values())+len(available)-1)//len(available)
+                score_sizes = sorted(set(score_sizes) | {min(split,s.cfg["score_batch"])})
         best = None
         estimates = []
+        home_choice = {}
         for mode, devices, free, eos, prefixes in f.layouts(pairs):
             local_best = None
+            best_queue = None
             for score_size in score_sizes:
-                for defer in ((False, True) if f.live_generation else (False,)):
+                deferrals = (False, True) if f.live_generation else (False,)
+                for defer in (deferrals if self.live_prefix_scoring else (True,)):
                     jobs = f.jobs(eos, prefixes, score_size, defer)
                     grouped = sorted(jobs, key=lambda x: (x.role not in f.role, x.role, x.stage, x.release))
                     orders = [("release", jobs)]
@@ -642,23 +837,46 @@ class CostSearchPolicy:
                                     estimate, actions = f.project(free, eos, queue, pool, size, invalid, preload)
                                     if local_best is None or estimate < local_best[0]:
                                         local_best = estimate, actions, pool, size, score_size, defer, order, preload
+                                        best_queue = queue
             if local_best is None:
                 raise RuntimeError("no feasible group for remaining supervision")
+            layout_home = None
+            if self.route_pools and not s.cost.measuring and len({j.role for j in best_queue}) > 1:
+                # Refine the best unrestricted plan for this layout. Compare the cost of
+                # retaining a group for a route against allowing every group to switch.
+                _, _, pool, size, score_size, defer, order, preload = local_best
+                if len(pool)>1:
+                    for role in sorted({j.role for j in best_queue}):
+                        for gpu in pool:
+                            other = tuple(i for i in pool if i != gpu)
+                            home = {j.role: ((gpu,) if j.role == role else other) for j in best_queue}
+                            estimate, actions = f.project(free, eos, best_queue, pool, size, invalid,
+                                                          preload, home)
+                            if estimate < local_best[0]:
+                                local_best = estimate, actions, pool, size, score_size, defer, order, preload
+                                layout_home = home
             estimates.append(dict(layout=mode, pair=devices, finish_s=local_best[0]))
             if best is None or local_best[0] < best[0]:
                 best = *local_best, mode, devices
+                home_choice = layout_home
         end, actions, pool, size, score_size, defer, order, preload, mode, devices = best
-        pair = devices if mode in ("merge", "merge_deferred") else None
-        s.record_search(layouts=estimates, chosen_layout=mode, chosen_pair=devices, score_groups=pool,
+        pair = devices if mode.startswith("merge") else None
+        fill = f.backfills.get((mode, devices))
+        s.record_search(layouts=estimates, tp_eligibility=dict(f.tp_checks), early_decode_groups=early,
+                        chosen_layout=mode, chosen_pair=devices, score_groups=pool, score_route_groups=home_choice,
                         train_batch=size, score_batch=score_size, defer_live_prefix=defer, score_order=order,
-                        preload_in_slack=preload, predicted_remaining_s=end, planner_wall_s=perf_counter() - started,
+                        preload_in_slack=preload, merge_backfill=fill, predicted_remaining_s=end, planner_wall_s=perf_counter() - started,
                         service={i: a.kind if a else "wait" for i,a in actions.items()})
-        if holding and pair != holding:
+        if holding and (pair != holding or fill):
             yield Action("unhold", holding[0], s.version, peer=holding[1])
         reserved = set(devices or ())
         if pair:
             src, dst = pair
-            if not holding:
+            if fill:
+                gpu, steps = fill
+                rows = f.live[gpu][:s.cfg["decode_batch"]]
+                yield Action("decode", gpu, s.version, dict(items=[dict(rid=r.rid) for r in rows], steps=steps))
+            if not holding or fill:
                 yield Action("hold", src, s.version, peer=dst)
             if not any(s.groups[i].busy for i in pair):
                 rebuild = "on_decode" if mode == "merge_deferred" else "eager"
@@ -674,6 +892,7 @@ class CostSearchPolicy:
                     yield Action("decode", src, s.version, dict(items=items, steps=s.cfg["quantum"]), peer=dst)
                 else:
                     yield Action("tp_expand", src, s.version, dict(items=items), peer=dst)
+        idle_service = []
         for g in s.groups:
             i = g.gpu
             if g.busy or i in reserved:
@@ -686,3 +905,9 @@ class CostSearchPolicy:
                         not r.finish or (not r.discarded and len(r.labels) < len(r.tokens)) for r in s.rows.values()):
                     continue
                 yield action
+            elif s.cost.measuring:
+                idle_service.append(g)
+        if idle_service and s.cost.measuring and not s.holds:
+            from .calibration import share_ready
+            yield from share_ready(s,idle_service,early_training=self.early_training,
+                                   live_prefix=self.live_prefix_scoring,calibrated=True)

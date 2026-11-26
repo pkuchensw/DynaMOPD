@@ -1,0 +1,196 @@
+<!doctype html>
+<!-- DynaMOPD paper report -->
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DynaMOPD · 加速比与 GPU 时间线</title>
+<style>
+:root{--ink:#172a36;--muted:#52646e;--rule:#dae2e6;--accent:#006b62;--slow:#9c4724;font:15px/1.45 "Inter","Noto Sans CJK SC","Microsoft YaHei",system-ui,sans-serif;color:var(--ink);background:#fff;font-variant-numeric:tabular-nums}
+*{box-sizing:border-box}body{margin:0}a{color:var(--accent);text-underline-offset:3px}button,select{font:inherit;color:inherit}button,summary,select{cursor:pointer}button{border:0;background:none}button:focus-visible,a:focus-visible,summary:focus-visible,select:focus-visible,canvas:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+[hidden]{display:none!important}header,main{width:min(1100px,calc(100% - 56px));margin:0 auto}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--rule);height:58px}header a{text-decoration:none;font-size:13px}header .brand{color:var(--ink);font-size:18px;font-weight:750;letter-spacing:-.5px}.brand span{font-size:13px;color:var(--muted);font-weight:500;margin-left:12px;letter-spacing:0}main{padding:24px 0 38px}
+h1,h2,p{margin:0}h1{font-size:clamp(24px,3vw,31px);letter-spacing:-.045em}h2{font-size:17px}.muted,.method,.config{color:var(--muted);font-size:13px}.method{margin:6px 0 16px}.between,.charthead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.seg{display:inline-flex;border:1px solid var(--rule);border-radius:6px;padding:2px;background:#f4f6f7;gap:2px}.seg button{font-size:12px;border-radius:4px;padding:4px 9px;color:var(--muted)}.seg button[aria-pressed=true]{background:white;color:var(--ink);font-weight:650;box-shadow:0 1px 3px #172a3620}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:5px 12px;text-align:left;border-bottom:1px solid #e6ecee}th{font-size:12px;color:var(--muted);font-weight:600;background:#f3f6f7}thead th{white-space:nowrap}.overview td{padding-top:9px;padding-bottom:9px}.overview thead th{padding-block:8px}.overview th:not(:first-child),.overview td:not(:first-child){text-align:right}.overview th:first-child{width:43%}.overview th:nth-child(2){width:10%}.overview td:first-child a{display:block;color:var(--ink);text-decoration:none;font-weight:550}.overview tbody tr{cursor:pointer}.overview tbody td:first-child a::after{content:" ›";font-size:13px;color:#698788}.overview tr:hover{background:#f2f8f7}.overview td:first-child a:hover{text-decoration:underline}.overview tr.groupstart td{border-top:2px solid #c3d1d7}.value{font-family:"Inter",system-ui,sans-serif;letter-spacing:.01em;color:var(--accent);font-weight:700}.slow{color:var(--slow)}.seedmark{font-size:12px;color:var(--muted);font-weight:450;margin-left:9px}.sub{border-top:1px solid var(--rule);margin-top:15px}.sub>summary{font-size:13px;font-weight:650;padding:10px 0}.extra-content{padding:3px 0 8px}.jump{margin:0 0 10px;display:inline-block;font-size:13px;text-decoration:none}.config{margin-top:3px}.settings{display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap}.settings label{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:12px}select{background:white;border:1px solid #cdd7dc;border-radius:4px;padding:3px 5px;max-width:100%;font-size:13px}.summaryline{font-size:14px;margin:11px 0 16px}.summaryline span{color:var(--muted);font-size:12px}.summaryline strong{margin:0 12px 0 4px}.legend{display:flex;align-items:center;gap:7px 12px;flex-wrap:wrap;margin:8px 0 1px;font-size:12px;color:var(--muted)}.legend i{display:inline-block;height:8px;width:12px;margin-right:4px;border-radius:1px}.chart{width:100%;display:block}.charthead{align-items:center}.card{border-block:1px solid var(--rule);padding:14px 0 8px}.caption{color:var(--muted);font-size:12px;margin:4px 0 7px}.detailRow{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.detailRow label{font-size:12px;color:var(--muted)}
+.actions{font-size:12px}.actions th,.actions td{vertical-align:top;padding:5px 7px}.actions td:nth-child(-n+2){white-space:nowrap}.actions td:last-child{overflow-wrap:anywhere}.scroll{overflow-x:auto}.pager{display:flex;align-items:center;gap:12px;font-size:12px;margin:7px 0}.pager button{border:1px solid var(--rule);border-radius:4px;padding:2px 7px}.pager button:disabled{color:#86969e;cursor:default}.picker{width:min(100%,620px);margin-right:8px}.go{color:var(--accent);font-weight:600}.tip{position:fixed;z-index:5;pointer-events:none;max-width:min(390px,92vw);padding:7px 10px;border:1px solid #87999e;background:#fff;color:var(--ink);border-radius:5px;font-size:12px;white-space:pre-line;box-shadow:0 2px 12px #15282e20}.tip:empty{display:none}.fail{color:var(--slow)}.dir{font-size:12px;white-space:nowrap}.loss{color:var(--slow)}.abtbl{max-width:660px}.abtbl td:last-child{text-align:right}
+@media(max-width:600px){header,main{width:calc(100% - 24px)}header{height:46px}.brand span{margin-left:6px}main{padding-top:16px}.overview td,.overview th{padding:7px 4px}.overview th{font-size:11px}.overview td{font-size:13px}.overview td:first-child{width:42%}.seedmark{display:block;margin:0}.between{gap:5px}.method{font-size:12px}.summaryline{margin:7px 0}.actions th,.actions td{padding:4px}.dir{font-size:11px}.charthead{gap:5px}.settings{gap:5px}}
+</style>
+<header><a class="brand" href="#">DynaMOPD<span>训练系统实验</span></a><a href="__ZIP_LINK__" download>下载论文数据 ↓</a></header>
+<main><section id="home"><div class="between"><h1>各场景加速比</h1><div class="seg" aria-label="结果分组"><button id="byCase" aria-pressed="true">按场景</button><button id="bySeed" aria-pressed="false">按种子</button></div></div>
+<p class="method">加速比 = 基线步耗时 ÷ DynaMOPD 步耗时。取第 2、3 步的权重发布间隔；同场景先对种子取平均。大于 1× 表示 DynaMOPD 更快。</p>
+<table class="overview" aria-label="主实验各场景加速比"><thead><tr><th scope="col">实验场景</th><th scope="col">GPU</th><th scope="col">KDFlow / Dyna</th><th scope="col">verl / Dyna</th></tr></thead><tbody id="rows"><!--HOME_ROWS--></tbody></table>
+<details class="sub" id="ab"><summary>动作消融</summary><div class="extra-content"><p class="caption">同种子、同负载，比较关闭动作和完整策略的步耗时。</p><table class="abtbl" aria-label="动作消融"><thead><tr><th>策略改动</th><th>关闭后 / 完整策略</th></tr></thead><tbody id="abrows"></tbody></table></div></details>
+<details class="sub"><summary>历史实验与模拟时间线</summary><div class="extra-content"><select aria-label="历史场景" class="picker" id="historyCase"></select><button class="go" id="historyGo">查看时间线 →</button></div></details></section>
+<section id="detail" hidden><a class="jump" href="#">← 各场景加速比</a><div class="between"><h1 id="title"></h1><div class="settings"><label id="seedLabel">种子 <select id="seed"></select></label><label>训练步 <select id="step"></select></label></div></div><p id="config" class="config"></p><div id="summaryline" class="summaryline"></div>
+<div class="card"><div class="charthead"><h2>同轮 GPU 对比</h2><div class="seg" aria-label="图层"><button id="stageMode" aria-pressed="true">执行阶段</button><button id="utilMode" aria-pressed="false">GPU 利用率</button></div></div><div id="legend" class="legend"></div><canvas id="compact" class="chart" aria-label="各系统同一秒轴的逐卡时间线"></canvas><p class="caption" id="caption"></p></div>
+<details class="sub" id="fine"><summary>展开逐卡明细</summary><div class="extra-content"><div class="detailRow"><label>系统 <select id="fineSystem"></select></label><span class="muted">逐行显示卡号，悬停查看实测值</span></div><canvas id="fineCanvas" class="chart" aria-label="所选系统各张 GPU 的阶段或利用率"></canvas></div></details>
+<details class="sub" id="act"><summary>查看调度与切换记录</summary><div class="extra-content"><div class="settings"><label>系统 <select id="actSystem"></select></label><label>动作 <select id="actKind"></select></label></div><div class="scroll"><table class="actions"><thead><tr><th>开始–结束（s）</th><th>开销（s）</th><th>卡 / 卡组</th><th>动作与回执</th></tr></thead><tbody id="actRows"></tbody></table></div><div class="pager"><button id="prev">上一页</button><span id="page"></span><button id="next">下一页</button></div></div></details>
+<p class="fail" id="error" role="alert"></p></section></main><div id="tip" class="tip"></div>
+<script>const DATA=/*INDEX*/;</script>
+<!--PAYLOADS-->
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const el=(tag,txt,cl)=>{const x=document.createElement(tag);if(txt!=null)x.textContent=txt;if(cl)x.className=cl;return x};
+const fmt=(n,d=2)=>Number(n).toFixed(d);
+const setOptions=(e,list)=>{e.replaceChildren(...list.map(([v,label])=>new Option(label,v)));};
+const known=new Map(),ab=new Map(DATA.ablations.map(x=>[x.key,x]));
+for(const c of DATA.scenarios)for(const m of c.members)known.set(m.key,{c,m});
+let split=false;
+function homeRows(){
+ const root=$('rows');root.replaceChildren();
+ for(const c of DATA.scenarios){
+  const entries=split?c.members:[{key:c.members[0].key,sec:c.sec}];
+  for(const [n,m] of entries.entries()){
+   const tr=el('tr');if(n===0&&c.sectionStart)tr.className='groupstart';
+   const link=el('a',c.title);link.href='#case/'+encodeURIComponent(m.key);
+   if(split)link.append(el('span','种子 '+m.seed,'seedmark'));const name=el('td');name.append(link);tr.append(name,el('td',c.gpus));tr.onclick=e=>{if(!e.target.closest('a')&&!window.getSelection()?.toString())link.click()};
+   for(const sys of ['kdflow','verl']){const v=m.sec[sys]/m.sec.dynamopd;tr.append(el('td',fmt(v)+'×','value'+(v<1?' slow':'')));}
+   root.append(tr);
+  }
+ }
+ for(const [id,v] of [['byCase',!split],['bySeed',split]])$(id).setAttribute('aria-pressed',String(v));
+}
+$('byCase').onclick=()=>{split=false;homeRows()};$('bySeed').onclick=()=>{split=true;homeRows()};homeRows();
+for(const r of DATA.ablations){const tr=el('tr'),td=el('td'),a=el('a',r.name);a.href='#case/'+encodeURIComponent(r.key);td.append(a);tr.append(td,el('td',fmt(r.value)+'×'));$('abrows').append(tr)}
+const history=Object.keys(DATA.groups).filter(k=>!known.has(k)&&!ab.has(k));setOptions($('historyCase'),history.map(k=>[k,k]));
+$('historyGo').onclick=()=>{location.hash='case/'+encodeURIComponent($('historyCase').value)};
+const phases={
+ decode:['生成','#177b75'],score:['教师评分','#497dce'],train:['训练','#cb5672'],sync:['归约 / 更新','#8856ae'],handoff:['切换 / 迁移','#d68b2c'],logprob:['学生 logprob','#7677aa'],pool:['资源池','#acb9c2'],other:['其他','#71828a']
+};
+const family=k=>({reduce:'sync',reduce_grads:'sync',publish:'sync',commit:'sync',switch:'handoff',move:'handoff',tp:'handoff',unload:'handoff',release:'handoff',load:'handoff',tp_expand:'handoff',tp_shrink:'handoff'}[k]||(phases[k]?k:'other'));
+const colorUtil=u=>'hsl(184 63% '+(97-.66*u)+'%)';
+let state={key:'',data:[],horizon:1,mode:'stage',rev:0,page:0},cache=new Map();
+async function unpack(r){
+ if(cache.has(r.blob))return cache.get(r.blob);
+ const src=Uint8Array.from(atob($('r'+r.blob).textContent),c=>c.charCodeAt(0));
+ const value=await new Response(new Blob([src]).stream().pipeThrough(new DecompressionStream('gzip'))).json();
+ if(cache.size>=12)cache.delete(cache.keys().next().value);cache.set(r.blob,value);return value;
+}
+function prepare(r,w){
+ if(!w)return {r,w:null,lanes:[]};
+ const ix=r.labels.map((l,i)=>({label:l,i,spans:[],samples:w.util[i]||[]})).sort((a,b)=>a.label.localeCompare(b.label,'en',{numeric:true}));
+ const byId=new Map(ix.map(x=>[x.i,x]));let pool;
+ for(const sp of w.spans){
+  if(sp[3]==='pool'){if(!pool)pool={label:'全池（未分卡）',i:-1,spans:[],samples:[]};pool.spans.push(sp)}
+  else for(const g of sp[2])byId.get(g)?.spans.push(sp);
+ }
+ if(pool)ix.push(pool);
+ for(const lane of ix){
+  const a=lane.samples;const gaps=a.slice(1).map((x,i)=>x[0]-a[i][0]).filter(t=>t>0).sort((a,b)=>a-b);
+  lane.period=gaps.length?gaps[Math.floor(gaps.length/2)]:null;
+ }
+ return {r,w,lanes:ix};
+}
+function legend(){
+ const box=$('legend');box.replaceChildren();let entries;
+ if(state.mode==='util'){entries=[[0, colorUtil(0)],[25,colorUtil(25)],[50,colorUtil(50)],[75,colorUtil(75)],[100,colorUtil(100)]].map(([v,c])=>[v+'%',c]);}
+ else{const used=new Set(state.data.flatMap(d=>(d.w?.spans||[]).map(s=>family(s[3]))));entries=Object.entries(phases).filter(([k])=>used.has(k)).map(([,v])=>v);}
+ for(const [label,color] of [...entries,[state.mode==='util'?'缺少采样':'无阶段回执','#e6ebed']]){const s=el('span'),i=el('i');i.style.background=color;s.append(i,document.createTextNode(label));box.append(s)}
+}
+function axisStep(max,n){const a=max/n,p=10**Math.floor(Math.log10(a));return ([1,2,2.5,5,10].find(v=>v>=a/p)||10)*p;}
+function sampleNear(samples,t){
+ if(!samples.length)return null;let a=0,b=samples.length;
+ while(a<b){const m=(a+b)>>1;if(samples[m][0]<t)a=m+1;else b=m;}
+ const prev=samples[a-1],next=samples[a];return !prev?next:!next?prev:Math.abs(prev[0]-t)<=Math.abs(next[0]-t)?prev:next;
+}
+function renderCanvas(canvas,data,fine=false){
+ const width=Math.max(230,Math.floor(canvas.parentElement.clientWidth)),left=fine?Math.min(166,width*.38):Math.min(99,width*.24),right=14,top=30,pw=width-left-right;
+ const hits=[],groups=[];let y=top;
+ for(const d of data){
+  const n=Math.max(1,d.lanes.length),dy=fine?18:Math.min(10,Math.max(2.2,72/n)),height=n*dy;
+  groups.push({d,y,dy,height});y+=fine?height+5:Math.max(56,height)+17;
+ }
+ const H=y+2,dpr=Math.min(window.devicePixelRatio||1,2),max=state.horizon;
+ canvas.style.height=H+'px';canvas.width=Math.round(width*dpr);canvas.height=Math.round(H*dpr);
+ const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);ctx.font='11px system-ui';ctx.fillStyle='#52646e';
+ const X=t=>left+Math.min(max,Math.max(0,t))/max*pw;
+ const every=axisStep(max,width<550?4:8);
+ for(let t=0;t<=max+1e-6;t+=every){const x=X(t);ctx.fillStyle='#52646e';ctx.textAlign=t===0?'left':'center';ctx.fillText(+t.toFixed(3)+' s',x,13);ctx.strokeStyle='#dce4e7';ctx.beginPath();ctx.moveTo(x,18);ctx.lineTo(x,H-1);ctx.stroke()}
+ ctx.textAlign='left';
+ for(const {d,y,dy,height} of groups){
+  if(!fine){ctx.font='bold 12px system-ui';ctx.fillStyle='#172a36';ctx.fillText(d.r.system,0,y+12,left-2);ctx.font='12px system-ui';ctx.fillStyle='#52646e';ctx.fillText(d.w?fmt(d.w.s,1)+' s':'缺少记录',0,y+27,left-2);}
+  if(!d.w)continue;
+  const end=X(d.w.s);
+  for(const [i,lane] of d.lanes.entries()){
+   const ly=y+i*dy,h=fine?dy-3:dy;ctx.fillStyle='#e6ebed';ctx.fillRect(left,ly,end-left,h);
+   if(fine){ctx.fillStyle='#344a56';ctx.font='11px system-ui';ctx.fillText(lane.label,0,ly+12,left-4);}
+   if(state.mode==='stage'){
+    for(const sp of lane.spans){if(sp[1]<0||sp[0]>d.w.s)continue;const a=X(sp[0]),b=X(Math.min(d.w.s,sp[1]));if(b<=a)continue;ctx.fillStyle=phases[family(sp[3])][1];ctx.fillRect(a,ly,Math.min(end-a,Math.max(.55,b-a)),h);}
+   }else{
+    const arr=lane.samples;
+    for(let j=0;j<arr.length;j++){
+     const [t,val]=arr[j];if(val==null)continue;
+     const p=lane.period;if(!p){if(t>=0&&t<=d.w.s){ctx.fillStyle=colorUtil(val);ctx.fillRect(X(t),ly,1,h)}continue;}
+     const a=X(Math.max(0,t-Math.min(p,j?(t-arr[j-1][0])/2:p/2))),b=X(Math.min(d.w.s,t+Math.min(p,j+1<arr.length?(arr[j+1][0]-t)/2:p/2)));
+     if(b>a){ctx.fillStyle=colorUtil(val);ctx.fillRect(a,ly,b-a+.03,h);}
+    }
+   }
+   hits.push({lo:ly,hi:ly+dy,d,lane});
+  }
+  if(d.lanes.length){ctx.fillStyle='#52646e';ctx.fillRect(end-.65,y,1,height);}
+ }
+ canvas.onpointermove=e=>{
+  const box=canvas.getBoundingClientRect(),x=e.clientX-box.left,py=e.clientY-box.top,t=(x-left)/pw*max,hit=hits.find(h=>py>=h.lo&&py<h.hi&&t>=0&&t<=h.d.w.s);
+  const tip=$('tip');if(!hit){tip.textContent='';return;}
+  const {d,lane}=hit,ss=lane.spans.filter(s=>s[0]<=t&&t<s[1]),near=sampleNear(lane.samples,t);
+  const lines=[d.r.system+' · '+lane.label+' · '+fmt(t)+' s'];
+  if(state.mode==='stage')lines.push(...(ss.length?ss.slice(-3).map(s=>s[4]+'  '+fmt(s[0])+'–'+fmt(s[1])+' s'):['无阶段回执']));
+  if(near&&near[1]!=null&&Math.abs(near[0]-t)<=(lane.period||.05))lines.push('实测利用率 '+near[1]+'%（'+fmt(near[0])+' s）');else if(state.mode==='util')lines.push('缺少采样');
+  tip.textContent=lines.join('\n');tip.style.left=Math.max(3,Math.min(e.clientX+12,innerWidth-tip.offsetWidth-5))+'px';tip.style.top=Math.max(3,Math.min(e.clientY+10,innerHeight-tip.offsetHeight-4))+'px';
+ };canvas.onpointerleave=()=>$('tip').textContent='';
+}
+function fineDraw(){if(!$('fine').open)return;const d=state.data[+$('fineSystem').value];if(d)renderCanvas($('fineCanvas'),[d],true)}
+function draw(){if($('detail').hidden)return;legend();renderCanvas($('compact'),state.data);fineDraw();}
+const actionNames={decision:'调度决策',switch:'角色切换',tp:'TP 扩缩容',move:'请求迁移',unload:'卸载 / 交接',publish:'发布权重',reject:'拒绝交接',commit:'提交更新',reduce:'梯度归约',pool:'资源池'};
+function actionKinds(){
+ const d=state.data[+$('actSystem').value];const kinds=[...new Set((d?.w?.actions||[]).map(a=>a[5]))];setOptions($('actKind'),[['','全部'],...kinds.map(k=>[k,actionNames[k]||k])]);state.page=0;
+}
+function actions(){
+ if(!$('act').open)return;
+ const d=state.data[+$('actSystem').value],kind=$('actKind').value,arr=(d?.w?.actions||[]).filter(a=>!kind||kind===a[5]),pageSize=12,pages=Math.max(1,Math.ceil(arr.length/pageSize));state.page=Math.min(Math.max(state.page,0),pages-1);
+ const rows=$('actRows');rows.replaceChildren();for(const a of arr.slice(state.page*pageSize,(state.page+1)*pageSize)){
+  const tr=el('tr'),cell=el('td',a[3]);if(a[4])cell.append(el('div',a[4],'muted'));tr.append(el('td',fmt(a[0])+'–'+fmt(a[1])),el('td',fmt(a[1]-a[0],3)),el('td',a[2].map(i=>d.r.labels[i]||i).join('、')||'控制器 / 资源池'),cell);rows.append(tr);
+ }
+ $('page').textContent=arr.length?'第 '+(state.page+1)+' / '+pages+' 页 · '+arr.length+' 条':'本步没有此类记录';$('prev').disabled=state.page===0;$('next').disabled=state.page+1>=pages;
+}
+$('fine').ontoggle=fineDraw;$('fineSystem').onchange=fineDraw;$('act').ontoggle=actions;$('actSystem').onchange=()=>{actionKinds();actions()};$('actKind').onchange=()=>{state.page=0;actions()};$('prev').onclick=()=>{state.page--;actions()};$('next').onclick=()=>{state.page++;actions()};
+for(const [id,mode] of [['stageMode','stage'],['utilMode','util']])$(id).onclick=()=>{state.mode=mode;$('stageMode').setAttribute('aria-pressed',String(mode==='stage'));$('utilMode').setAttribute('aria-pressed',String(mode==='util'));draw()};
+function setSummary(knownCase,abl){
+ const box=$('summaryline');box.replaceChildren();if(knownCase){const s=knownCase.m.sec;box.append(el('span','所选种子 · 稳态加速比'));for(const [n,k] of [['KDFlow','kdflow'],['verl','verl']]){const val=s[k]/s.dynamopd;box.append(document.createTextNode(' '+n),el('strong',fmt(val)+'×','value'+(val<1?' slow':'')))}}
+ else if(abl){box.append(el('span','关闭后 / 完整策略'),el('strong',fmt(abl.value)+'×','value'));}
+}
+async function loadStep(){
+ const v=++state.rev,items=DATA.groups[state.key].map(i=>DATA.runs[i]),step=$('step').value;
+ const rank={DynaMOPD:0,KDFlow:1,verl:2};items.sort((a,b)=>(rank[a.system]??3)-(rank[b.system]??3));
+ $('error').textContent='';$('compact').setAttribute('aria-busy','true');state.data=[];state.horizon=1;$('tip').textContent='';
+ const cx=$('compact').getContext('2d');cx.clearRect(0,0,$('compact').width,$('compact').height);$('fineCanvas').style.visibility='hidden';$('actRows').replaceChildren();
+ try{
+  const data=await Promise.all(items.map(async r=>prepare(r,(await unpack(r))[step])));if(v!==state.rev)return;
+  state.data=data;state.horizon=Math.max(.001,...data.map(d=>d.w?.s||0));
+  const nodes=data.map((d,i)=>[i,d.r.system+(data.filter(x=>x.r.system===d.r.system).length>1?' · '+d.r.rid:'')]);
+  for(const id of ['fineSystem','actSystem']){const old=$(id).value;setOptions($(id),nodes);if(nodes.some(n=>String(n[0])===old))$(id).value=old;}
+  actionKinds();actions();$('fineCanvas').style.visibility='';
+  const bases=[...new Set(data.map(d=>d.r.basis))];
+  const times=bases.map(b=>data.filter(d=>d.r.basis===b).map(d=>d.r.system).join('、')+' 取'+b).join('；')+'。';
+  $('caption').textContent='每条细行代表一张 GPU，各系统共用秒轴。'+times+(data.some(d=>d.lanes.some(l=>l.i===-1))?'未报告卡号的事件单列为全池。':'');
+  if(data.every(d=>d.r.mode==='sim'))$('caption').textContent='模拟时间轴，细行表示各卡或卡组。';
+  $('compact').setAttribute('aria-busy','false');draw();
+ }catch(e){if(v===state.rev){$('compact').setAttribute('aria-busy','false');$('error').textContent='读取此时间线失败。请使用支持 gzip DecompressionStream 的浏览器。';}}
+}
+function route(){
+ let k;try{k=decodeURIComponent(location.hash.slice(6))}catch(e){k=''}
+ $('tip').textContent='';
+ if(!location.hash.startsWith('#case/')||!Object.hasOwn(DATA.groups,k)){
+  state.rev++;state.key='';state.data=[];$('detail').hidden=true;$('home').hidden=false;document.title='DynaMOPD · 各场景加速比';window.scrollTo(0,0);return;
+ }
+ const found=known.get(k),abl=ab.get(k),same=state.key&&(found&&known.get(state.key)?.c===found.c);const prevStep=same?$('step').value:'2';state.key=k;
+ $('home').hidden=true;$('detail').hidden=false;$('title').textContent=found?found.c.title:abl?abl.name:k;document.title=$('title').textContent+' · DynaMOPD';
+ if(!same){$('fine').open=false;$('act').open=false;}
+ $('seedLabel').hidden=!found;
+ if(found){setOptions($('seed'),found.c.members.map(m=>[m.key,m.seed]));$('seed').value=k;
+  const c=found.c;$('config').textContent=c.gpus+' 卡 · 全局 batch '+c.batch+' · 回答上限 '+c.cap+' · 学生 '+c.student+' · '+c.count+' 位教师';
+ }else $('config').textContent=abl?abl.config:'';
+ setSummary(found,abl);
+ const steps=[...new Set(DATA.groups[k].flatMap(i=>DATA.runs[i].keys))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+ setOptions($('step'),steps.map(s=>[s,/^\d+$/.test(s)?'第 '+s+' 步':s]));if(steps.includes(prevStep))$('step').value=prevStep;
+ window.scrollTo(0,0);loadStep();
+}
+$('seed').onchange=()=>{location.hash='case/'+encodeURIComponent($('seed').value)};$('step').onchange=loadStep;window.addEventListener('hashchange',route);
+let resize=0;window.addEventListener('resize',()=>{clearTimeout(resize);resize=setTimeout(draw,85)});route();
+</script></html>

@@ -129,12 +129,16 @@ class Group:
 class Costs:
     """Exponentially weighted completed-action observations, in seconds."""
     def __init__(self, cfg):
-        self.values = dict(cfg["costs"])
+        self.measuring = cfg.get("first_round_calibration", False)
+        self.values = {} if self.measuring else dict(cfg["costs"])
         self.score_samples = {}
-        self.values.setdefault("teacher_wake", self.values["score_base"])
-        self.values.setdefault("replica_reduce", self.values["switch"])
+        if not self.measuring:
+            self.values.setdefault("teacher_wake", self.values["score_base"])
+            self.values.setdefault("replica_reduce", self.values["switch"])
 
     def get(self, name):
+        if self.measuring and name == "replica_reduce" and name not in self.values:
+            return self.values["rollout_publication"]
         return self.values[name]
 
     def switch(self, old, new):

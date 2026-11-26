@@ -29,7 +29,9 @@ DynaMOPD 的 H20 配置在 CLI 中使用 `--simulate` 时默认选择 `cost_sear
 
 真机和 SimRL 共用轮最大回复长度的指数移动平均（EMA）。每个成功轮次取所有请求实际生成的最大 token 数，包括 EOS 和达到上限的回复。首轮最大值初始化 EMA，之后每轮更新一次。作业 JSON 中的 `max_length_ema_alpha` 是新观测的权重，默认 0.2，可设为 `null` 复现原估计策略。每轮开始的 `round_start.max_length_ema` 是本轮可用的估计，结束的 `round_end.max_response_tokens` 和 `round_end.max_length_ema` 是实际最大值与更新结果。
 
-剩最后一条活跃请求时，调度器用 EMA 减去已生成长度估计剩余 token，并按该请求自己的回答上限截断。多请求并行、首次冷启动或前缀已经达到 EMA 时，沿用同路由已结束样本的条件剩余长度中位数，没有合适样本时使用 `tail_prior`。最后完成的请求有可能较晚才开始解码，这时轮最大值可能高估它的长度。可恢复的训练检查点随权重保存 `scheduler.json`；恢复旧检查点时从冷启动开始。
+默认在第 0 轮把回答长度上限作为批内最长回复的先验。从仍有机会达到最高上限的活跃请求中，取已生成前缀最长的一条承载该估计，其余请求沿用常规估计。若某条已结束回复已经达到所有剩余请求的上限，就不再额外预测一条长尾。搜索事件的 `cold_start_tail` 记录本次承担该先验的轨迹 ID。采样仍按实际 EOS 或长度上限结束。设置 `max_length_ema_alpha=null` 同时停用此首轮先验和后续 EMA。
+
+后续轮次剩最后一条活跃请求时，调度器用 EMA 减去已生成长度估计剩余 token，并按该请求自己的回答上限截断。多请求并行、缺少历史 EMA 或前缀已经达到 EMA 时，使用同路由的条件长度估计，没有合适样本时使用 `tail_prior`。最后完成的请求有可能较晚才开始解码，这时轮最大值可能高估它的长度。可恢复的训练检查点随权重保存 `scheduler.json`。
 
 搜索空间包含自然排空、有方向的双组迁移、不同评分组集合、按就绪时间或按教师安排批次、提前评分或等待后续前缀、在空闲组执行就绪微批，以及租用教师提前退回 standby。提供宽 TP profile 时，也比较借卡扩容、继续宽 TP 和缩回。宽 TP 执行器目前只支持同节点一对卡组承载最后一条活跃请求。每个候选都估算组排空时间、角色代价、评分和训练依赖、梯度归约和权重发布，再派发所选计划当前可执行的动作。多个互不冲突的组可以同时执行。
 
@@ -99,3 +101,9 @@ decode 以一个 RPC 内最慢的推理副本决定卡组完成时间。模型�
 对 SGLang 作业设置 `deferred_migration_prefill=true` 会加入一种合并候选。目标组检查容量、seed 和采样位置，然后确认接管；源组收到确认后可以切换角色。目标组在下一次 generate 时用完整前缀重建缺失的 KV。立即重建和自然排空仍参与同一决策。真机 trace 中 `transfer=seed_position_then_decode` 表示此交接，`deferred_context_tokens` 为迁移时的上下文量，后续 decode 的 `migration_prefill_contexts` 和 `cached_tokens` 给出各请求的上下文与引擎命中量。decode RPC 的持续时间同时包含重建和生成，二者目前没有单独的 GPU kernel 计时。
 
 在 14B 实验中，用前两轮拟合、第三轮留出验证，12 次服务换岗的平均绝对误差为 0.54 秒，按角色对估计为 0.91 秒。四组发布动作的误差为 0.40 秒。两次模型拟合与训练作业分开运行。
+
+### 复查生成空档和 TP 扩容
+
+在 `--policy cost_search --simulate --replay` 的回放命令上加入 `--rollout-tp-profile <成本文件>`（或在配置中指定 `rollout_tp_expansion`），调度器才有可用的宽 TP 布局。成本应匹配学生模型、设备和引擎。比较扩容收益时，两次使用相同的成本文件、预留显存和回放输入，在对照组配置中设置 `policy_options.allow_tp_expansion=false`。该选项仅关闭扩容候选。
+
+搜索检查同一宽 TP 网格中主组和借出组的请求所有权、显存及在途操作。其他卡组可以继续生成。在 `schedule_search` 事件中，`tp_eligibility` 记录候选的可行性，`early_decode_groups` 给出搜索期间已派发的独立卡组。实际交接起止以 `tp_expand` 的 dispatch 和 complete 为准。评估生成气泡时应同时查看卡组间的 decode 空档和单个 RPC 内各副本的工作量。后者即使在卡组持续生成时也可能不均衡。

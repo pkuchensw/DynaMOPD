@@ -70,7 +70,8 @@ def audit(folder):
                     assert tuple(leases) == tp_pair and op in ("decode", "tp_shrink")
                 if op=="tp_expand":
                     assert tp_pair is None and len(leases)==2 and len(x["ids"])==1
-                    assert owners[x["ids"][0]]==g and len(owners)-len(reason)==1
+                    local_live = {rid for rid, owner in owners.items() if owner in leases and rid not in reason}
+                    assert local_live == set(x["ids"]) and owners[x["ids"][0]] == g
                 if op=="tp_shrink" or (op=="decode" and len(leases)==2):
                     assert tuple(leases)==tp_pair
                 assert all(i not in busy for i in leases)

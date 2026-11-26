@@ -83,7 +83,20 @@ def build_job(config, *, simulate, replay, resume_version):
     cfg.setdefault("train_on_length", cfg["algorithm"] == "on_policy_k1")
     if type(cfg["train_on_length"]) is not bool:
         raise ValueError("train_on_length must be a boolean")
-    cfg.setdefault("policy", "merge")
+    cfg.setdefault("policy", "merge" if simulate else "cost_search")
+    if (not simulate and cfg["policy"] in ("cost_search","natural","merge","elastic_tp")
+            and cfg["engine"] == "sglang_fsdp2"):
+        cfg["first_round_calibration"] = True
+        # Timing parameters belong to this invocation's allocation.
+        cfg["costs"] = {}
+        cfg.pop("tail_prior", None)
+        for key in ("sim_worker_profile", "sim_decode_roofline", "sim_teacher_prepare_s",
+                    "sim_teacher_release_s", "sim_teacher_activation_s", "sim_engine_classes"):
+            cfg.pop(key, None)
+        if cfg.get("rollout_tp_expansion"):
+            opts = cfg["rollout_tp_expansion"]
+            cfg["rollout_tp_expansion"] = {k:opts[k] for k in ("source_tp","target_tp","group_pairs") if k in opts}
+            cfg["rollout_tp_expansion"]["measure"] = True
     if cfg.get("length_forecast", "conditional_median") not in {"conditional_quantiles", "conditional_median"}:
         raise ValueError("unknown length_forecast")
     alpha = cfg.setdefault("max_length_ema_alpha", 0.2)
@@ -96,6 +109,9 @@ def build_job(config, *, simulate, replay, resume_version):
         raise ValueError("elastic_tp requires a TP cost profile for the selected executor")
     cluster = cfg.setdefault("cluster", {"transport": "local"})
     shape = node_shape(cluster)
+    if (not simulate and len(shape) > 1 and cfg["engine"] == "sglang_fsdp2"
+            and cfg.get("weight_sync", "tensor") == "tensor" and cfg.get("max_train_groups", cfg["groups"]) > 1):
+        cfg.setdefault("node_local_rollout_publication", True)
     if shape:
         allocations(cfg)
         if not simulate and cluster.get("transport", "local") == "local":
@@ -115,6 +131,8 @@ def build_job(config, *, simulate, replay, resume_version):
     # Small jobs have too few independent microbatches to amortize another replica.
     default_groups = min(cfg["groups"], max(1, cfg["batch_size"] // (2 * max(1, cfg["microbatch"]))))
     limit = cfg.setdefault("max_train_groups", default_groups if replicated else 1)
+    if cfg.get("node_local_rollout_publication") and (limit <= 1 or not replicated):
+        cfg["node_local_rollout_publication"] = False
     if type(limit) is not int or not 1 <= limit <= cfg["groups"] or (limit > 1 and not replicated):
         raise ValueError("max_train_groups must fit the allocation and the trainer replication backend")
     if type(cfg.get("replica_bucket_mib", 64)) is not int or cfg.get("replica_bucket_mib", 64) < 1:

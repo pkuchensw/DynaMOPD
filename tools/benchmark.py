@@ -13,7 +13,7 @@ import time
 
 from DynaMOPD.cluster.topology import visible_devices
 from DynaMOPD.trainer.config import resolve_model_paths
-from DynaMOPD.tools.benchmark_layout import check_command, check_layouts
+from DynaMOPD.tools.benchmark_layout import benchmark_nodes, check_command, check_layouts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -95,6 +95,10 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
     if devices is None:
         devices = visible_devices()[:cfg["groups"] * cfg["group_size"]]
     n_gpus=len(devices)
+    nodes = benchmark_nodes(cfg)
+    address = cfg.get("cluster", {}).get("address")
+    if nodes > 1 and (not address or address in ("local", "auto")):
+        raise ValueError("multi-node benchmark requires an explicit Ray cluster address")
     if "inference_tp_size" not in cfg or "verl_teacher_gpus" not in cfg:
         raise ValueError("prepare a new benchmark directory with an explicit shared layout")
     if system not in cfg["benchmark_systems"]:
@@ -162,7 +166,9 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
             synchronous_teacher = cfg.get("kdflow_synchronous_teacher", False)
             keep_optimizer = cfg.get("kdflow_keep_optimizer", False)
             overlay_files = install(repo, work, synchronous_teacher=synchronous_teacher, keep_optimizer=keep_optimizer,
-                                    engine_options=engine_options, devices=devices)
+                                    engine_options=engine_options, devices=devices, external_ray=nodes > 1)
+            if nodes > 1:
+                env["RAY_ADDRESS"] = address
             env["PYTHONPATH"] = f"{work}:{ROOT.parent}:{env['PYTHONPATH']}"
 
             # KDFlow's sampler always uses randperm(seed + epoch). Invert its
@@ -178,7 +184,7 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
             teacher_file.write_text(json.dumps(teacher_paths,indent=2))
             cmd = replace_flags(base,dict(train_batch_size=batch,rollout_batch_size=batch,generate_max_len=cap,
                         student_name_or_path=staged[cfg["student"]],multi_teacher_config=teacher_file,
-                        num_gpus_per_node=n_gpus,rollout_tp_size=tp,rollout_num_engines=parallel["rollout_replicas"],
+                        num_nodes=nodes,num_gpus_per_node=n_gpus,rollout_tp_size=tp,rollout_num_engines=parallel["rollout_replicas"],
                         teacher_dp_size=parallel["teacher_replicas"],teacher_tp_size=tp,teacher_pp_size=1,
                         fsdp_size=shard,micro_train_batch_size=micro,max_token_len_per_gpu=budget,
                         rollout_mem_fraction_static=memory,teacher_mem_fraction_static=memory,
@@ -192,11 +198,19 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
             cmd = replace_flags(cmd, dict(kd_loss_fn="verl_k1", kd_algorithm="verl_k1"))
         else:
             replicas=parallel["teacher_replicas"]
+            actor_gpus = parallel["rollout_replicas"] * tp
+            teacher_gpus = replicas * tp
+            if nodes > 1:
+                local_init = ("ray_kwargs.ray_init.num_cpus", "ray_kwargs.ray_init.object_store_memory",
+                              "ray_kwargs.ray_init.include_dashboard", "ray_kwargs.ray_init.address")
+                base = [arg for arg in base if arg.lstrip("+").split("=", 1)[0] not in local_init]
+                base = replace_hydra(base, {"+ray_kwargs.ray_init.address": address})
             cmd = replace_hydra(base,{"data.train_batch_size":batch,"data.train_files":out/"train.parquet",
                         "actor_rollout_ref.model.path":staged[cfg["student"]],
                         "actor_rollout_ref.actor.optim.lr":cfg["lr"],
                         "actor_rollout_ref.actor.optim.weight_decay":cfg.get("weight_decay",0.),
-                        "trainer.n_gpus_per_node":n_gpus-replicas*tp,"distillation.n_gpus_per_node":replicas*tp,
+                        "trainer.nnodes":max(1,actor_gpus//n_gpus),"distillation.nnodes":max(1,teacher_gpus//n_gpus),
+                        "trainer.n_gpus_per_node":min(n_gpus,actor_gpus),"distillation.n_gpus_per_node":min(n_gpus,teacher_gpus),
                         "actor_rollout_ref.rollout.tensor_model_parallel_size":tp,
                         "actor_rollout_ref.actor.fsdp_config.fsdp_size":shard,
                         "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu":micro,
@@ -234,6 +248,8 @@ def run(system, out, state, backup_overlay=None, verl_keep_optimizer=False, *, p
                 cap=cap, devices=devices, state=str(state/label))
     meta["sglang_options"] = engine_options
     meta["parallel_layout"] = parallel
+    if nodes > 1:
+        meta.update(nodes=nodes, total_gpus=nodes*n_gpus, cluster=cfg["cluster"])
     meta["config_sha256"] = hashlib.sha256(json.dumps(cfg,sort_keys=True).encode()).hexdigest()
     meta["dataset_sha256"] = hashlib.sha256((out/"train.jsonl").read_bytes()).hexdigest()
     if system == "dynamopd":

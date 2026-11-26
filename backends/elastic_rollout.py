@@ -37,6 +37,20 @@ class WideRollout:
         self.startup = dict(groups=self.groups, devices=self.devices, bootstrap_s=monotonic()-start,
                             engine_ready_s=ready_at-start, park_s=monotonic()-ready_at,
                             wake_bytes=self.wake_bytes, idle_device_bytes=[p-q for p,q in zip(before,parked,strict=True)])
+        if self.profile.measuring:
+            start = monotonic()
+            self.server.wake()
+            awake = monotonic()
+            size = min(cfg["quantum"], cfg["max_prompt"])
+            item = dict(rid="tp-calibration",prompt=[1]*size,tokens=[])
+            self.server.batch([item],dict(max_new_tokens=0,temperature=1.),return_logprob=True,logprob_start_len=[size-1])
+            prefilled = monotonic()
+            (_,result,_), = self.server.batch([item],dict(max_new_tokens=min(cfg["quantum"],cfg["max_new_tokens"]),
+                                                          temperature=1.,ignore_eos=True))
+            decoded = monotonic()
+            self.server.sleep()
+            self.startup["measured_costs"] = dict(wake_s=awake-start,sleep_s=monotonic()-decoded,
+                  prefill_token_s=(prefilled-awake)/size, decode_token_s=(decoded-prefilled)/len(result["output_ids"]))
         return self.startup
 
     def publish(self, group, handles, version, index, last):

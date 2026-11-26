@@ -173,7 +173,13 @@ def fit_profile(cfg, points):
     profile["teacher_activation_s"] = {role: median(times) for role, times in launches.items()}
     decode = [p for p in by_op["decode"] if "lanes" in p]
     if decode:
-        profile["decode_rpc"] = fit_decode(decode)
+        try:
+            profile["decode_rpc"] = fit_decode(decode)
+        except (ImportError, ValueError):
+            # A small first batch may not identify all coefficients. Per-step
+            # latency is still identifiable from acknowledged token counts.
+            profile["decode_rpc"] = [0., median(p["dt"]/max(lane[1] for lane in p["lanes"])
+                                              for p in decode), 0., 0., 0., 0.]
     teachers = defaultdict(list)
     for p in by_op["score"]:
         if "critical_tokens" in p:
