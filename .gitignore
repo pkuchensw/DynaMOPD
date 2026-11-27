@@ -1,6 +1,7 @@
 # Local jobs, metrics, private experiment reports and developer checks
 /runs/
-/tests/
+/tests/*
+!/tests/test_simulation.py
 /RESULTS.md
 /tools/check_*.py
 /tools/measure_tp_*.py

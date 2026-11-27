@@ -1,4 +1,4 @@
-<h1 align="center">DynaMOPD</h1>
+<h1 align="center"><img src="docs/dynamopd-logo.png" alt="DynaMOPD" width="460"></h1>
 <p align="center">面向语言模型的同步多教师在线策略蒸馏框架</p>
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
 <p align="center"><a href="#快速开始">快速开始</a> · <a href="#训练示例">训练示例</a> · <a href="#技术文档">技术文档</a></p>
@@ -19,19 +19,31 @@ flowchart LR
 - **前缀评分。** SGLang 分块返回生成的 token，每条请求对应的教师可以随到随评。一个回答生成完毕且监督齐全后，即可进入训练，其他请求继续生成。
 - **GPU 共享。** 调度器可以在生成分块的边界迁移未完成的请求，把腾出的卡组用于评分或 PyTorch FSDP2 训练。可选策略还可以为最后一条请求借用第二个卡组，提高张量并行度（TP）。
 - **蒸馏目标。** 内置带裁剪的 on-policy K1、采样反向 KL、重要性采样前向 KL，以及教师 top-k 交叉熵。自定义目标可定义教师路由和逐 token 损失。[算法接口](algorithms/base.py)
-- **执行与回放。** 同一控制器可以驱动本地 worker、Ray 集群或 SimRL 模拟器。使用真实作业记录的样本，可以在模拟中重放每条请求的提示和回答长度。[扩展指南](docs/extensions.md) · [模拟器指南](docs/simulator-cost-search.md)
+- **执行与回放。** 同一控制器可以驱动本地 worker、Ray 集群或内置 Python 模拟器。模拟与回放不需要 GPU 或外部模拟器包。使用真实作业记录的样本，可以在模拟中重放每条请求的提示和回答长度。[扩展指南](docs/extensions.md) · [模拟器指南](docs/simulator-cost-search.md)
 
 ## 快速开始
 
 ### 安装
 
-请在配有 CUDA 和 Python 3.10 或更高版本的 Linux 环境中，从仓库根目录执行以下命令。
+进行 GPU 训练时，请在配有 CUDA 和 Python 3.10 或更高版本的 Linux 环境中，从仓库根目录执行以下命令。
 
 ```bash
 python -m pip install -e '.[gpu]'
 ```
 
 如果环境中已有 GPU 依赖，可执行 `python -m pip install --no-deps -e .`。使用 FlashAttention 打包训练时加上 `packed`，使用 Ray 时加上 `cluster`，读取 Parquet 时加上 `parquet`。例如，`python -m pip install -e '.[gpu,packed,cluster,parquet]'` 可安装这四组依赖。[依赖声明](pyproject.toml)
+
+### 在 CPU 上试运行模拟
+
+内置模拟器仅使用 Python 标准库。安装基础包后即可运行随包配置，无须下载模型权重：
+
+```bash
+python -m pip install -e .
+python -m DynaMOPD.run --simulate --config configs/minimal-4gpu.json --out runs/sim-smoke
+python -m DynaMOPD.tools.audit runs/sim-smoke
+```
+
+每次运行使用新的输出目录。模拟用于分析调度、token 长度和成本，不训练模型权重，也不衡量模型质量。
 
 ### 运行四卡示例
 
@@ -86,7 +98,7 @@ bash ./launch.sh --config configs/sglang-tp1-fsdp2-8xh20.json \
 
 ## 致谢
 
-训练目标的设计参考了 verl。虚拟时间执行器基于 SimRL，运行模拟时使用其 `srl` 包。[verl](https://github.com/verl-project/verl) · [SimRL 集成](backends/simulation.py)
+训练目标的设计参考了 [verl](https://github.com/verl-project/verl)。早期模拟工作使用过 SimRL；当前虚拟时间执行器与成本模型均由 DynaMOPD 内置实现，无须安装 `srl` 包。
 
 ## 许可证
 

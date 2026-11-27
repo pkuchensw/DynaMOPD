@@ -1,6 +1,8 @@
 # Calibrating the simulator from worker traces
 
-The bundled H20 recipes select `cost_search` when the CLI runs with `--simulate`. From Python, set the policy explicitly with `fit(dict(config, policy="cost_search"), simulate=True, ...)`. Training on hardware uses the `policy` in the job configuration. Use a calibration profile that matches the models, training layout, and engine lifecycle.
+The bundled H20 recipes select `cost_search` when the CLI runs with `--simulate`. From Python, set the policy explicitly with `fit(dict(config, policy="cost_search"), simulate=True, ...)`. Training on hardware uses the `policy` in the job configuration. Use a calibration profile that matches the models, training layout, and engine lifecycle. CPU simulation and replay use DynaMOPD's built-in Python models and do not require an external simulator package.
+
+The measurements and replay tables below describe earlier experiments, including the previous SimRL-backed simulator. They have not been rerun with the current built-in simulator. Its cost equations use the configured coefficients; rerun matched workloads and validate against hardware before attributing these numbers to the current implementation.
 
 ## Validate individual action predictions
 
@@ -28,7 +30,7 @@ Across four rounds in each of the five scenarios, only 10 of 71 switches into tr
 
 After settling a completion event, the controller predicts the time remaining in the round using visible prefixes, current ownership, historical output lengths, and in-flight work. The replay engine uses recorded response lengths to advance generation. The scheduler sees only tokens that have already been reported.
 
-Hardware and SimRL runs both maintain an exponential moving average (EMA) of the maximum response length per round. Each successful round contributes its longest generated response, including responses that reached EOS or the length limit. The first observation initializes the EMA, which updates once per round thereafter. The JSON option `max_length_ema_alpha` weights the new observation and defaults to 0.2. Set it to `null` to reproduce the earlier estimator. The trace records the estimate available at the start in `round_start.max_length_ema`, and the observed maximum and updated estimate in `round_end.max_response_tokens` and `round_end.max_length_ema`.
+Hardware and simulated runs both maintain an exponential moving average (EMA) of the maximum response length per round. Each successful round contributes its longest generated response, including responses that reached EOS or the length limit. The first observation initializes the EMA, which updates once per round thereafter. The JSON option `max_length_ema_alpha` weights the new observation and defaults to 0.2. Set it to `null` to reproduce the earlier estimator. The trace records the estimate available at the start in `round_start.max_length_ema`, and the observed maximum and updated estimate in `round_end.max_response_tokens` and `round_end.max_length_ema`.
 
 In round 0, the default prior for the longest response in the batch is the response limit. Among active requests that can still reach the highest limit, the scheduler assigns this estimate to the one with the longest generated prefix. Other requests use the ordinary estimator. If a completed response has already reached the highest limit among all remaining requests, the scheduler predicts no additional long tail. Search events record the trajectory carrying the prior in `cold_start_tail`. Actual sampling ends at EOS or at the request's limit. Setting `max_length_ema_alpha=null` disables both the first-round prior and later EMA updates.
 
@@ -49,7 +51,7 @@ Both the natural-drain policy and cost search replayed four rounds of 512 record
 
 In the 7B comparison, cost search completed one migration in v1 and two in v2, yet its rounds took longer than natural draining. Compare predictions and receipts by decision ID to inspect errors in estimated tail length and downstream service time. This comparison measures two complete policies, so migration accounts for only an unknown portion of the difference. Round v1 was also used to fit the model. The policy comparison therefore has different coverage from the held-out v2 prediction errors above.
 
-Run the following commands from the repository root in an environment that can import SimRL. Use new output paths.
+Run the following commands from the repository root after installing DynaMOPD. Replay needs only the base package; install the `calibration` extra to fit decode coefficients. Use new output paths.
 
 ```bash
 trace="${TRACE_DIR:?set TRACE_DIR to the recorded training output}"

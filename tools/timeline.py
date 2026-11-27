@@ -35,7 +35,8 @@ def report(folder):
         last = max(last, e.get("t", 0.))
         if event == "config":
             backend, config = e["backend"], e["config"]
-            simulated = backend == "simrl"
+            # Keep historical traces readable after moving to the built-in simulator.
+            simulated = backend in ("simulation", "simrl")
         elif event == "executor_ready":
             for p in e["placements"]:
                 group = p["group"]

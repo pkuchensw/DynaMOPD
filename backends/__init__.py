@@ -1,1 +1,1 @@
-"""GPU workers and the SimRL implementation of the same actions."""
+"""GPU workers and the built-in virtual-time implementation of the same actions."""

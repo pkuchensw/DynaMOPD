@@ -18,7 +18,7 @@ def main():
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--algorithm", help="built-in objective name or package.module:Class")
     parser.add_argument("--policy", help="cost_search, natural, merge, elastic_tp, or package.module:Class")
-    parser.add_argument("--rollout-tp-profile",type=Path,help="local standby TP topology; SimRL also reads timings, SGLang measures them on the allocation")
+    parser.add_argument("--rollout-tp-profile",type=Path,help="local standby TP topology; simulation also reads timings, SGLang measures them on the allocation")
     parser.add_argument("--sim-tp-profile", type=Path, help="TP rooflines and resize costs for simulation")
     parser.add_argument("--cluster-config", type=Path, help="JSON cluster section overriding config.cluster")
     parser.add_argument("--groups", type=int, help="total logical GPU groups across all nodes")
@@ -34,7 +34,7 @@ def main():
     parser.add_argument("--timeline", action=argparse.BooleanOptionalAction, default=None,
                         help="write the self-contained HTML timeline when the job exits (default: on)")
     parser.add_argument("--simulate", action="store_true")
-    parser.add_argument("--replay", type=Path, help="SimRL workload from samples-v*.jsonl")
+    parser.add_argument("--replay", type=Path, help="simulation workload from samples-v*.jsonl")
     parser.add_argument("--rounds", type=int)
     parser.add_argument("--resume-version", type=int, default=0)
     args = parser.parse_args()

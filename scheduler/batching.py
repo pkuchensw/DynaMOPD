@@ -1,4 +1,4 @@
-"""Deterministic FSDP microbatches shared by admission, workers and SimRL."""
+"""Deterministic FSDP microbatches shared by admission, workers and simulation."""
 
 
 def training_waves(entries, cfg, length, limit=None, *, forecast=False):

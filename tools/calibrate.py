@@ -1,4 +1,4 @@
-"""Derive SimRL cost inputs from completed worker operations of a real round."""
+"""Derive simulator cost inputs from completed worker operations of a real round."""
 import argparse
 from collections import defaultdict
 import json

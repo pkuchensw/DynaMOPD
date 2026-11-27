@@ -1,4 +1,4 @@
-<h1 align="center">DynaMOPD</h1>
+<h1 align="center"><img src="docs/dynamopd-logo.png" alt="DynaMOPD" width="460"></h1>
 <p align="center">Synchronous multi-teacher on-policy distillation for language models</p>
 <p align="center"><strong>English</strong> · <a href="README_CN.md">Simplified Chinese</a></p>
 <p align="center"><a href="#getting-started">Getting started</a> · <a href="#training-recipes">Training recipes</a> · <a href="#documentation">Documentation</a></p>
@@ -19,19 +19,31 @@ flowchart LR
 - **Prefix scoring.** SGLang returns generated tokens in chunks. Each request's assigned teacher can score those tokens as they arrive. A completed, fully scored answer can enter training while other requests continue to generate.
 - **GPU sharing.** The scheduler can move unfinished requests at chunk boundaries and reassign freed GPU groups to scoring or PyTorch FSDP2 training. An optional policy can borrow a second group to widen tensor parallelism (TP) for the last request.
 - **Distillation objectives.** Choose clipped on-policy K1, sampled reverse KL, importance-sampled forward KL, or teacher top-k cross-entropy. Custom objectives can supply their own routing and per-token loss. [Algorithm interface](algorithms/base.py)
-- **Execution and replay.** The same controller can drive local workers, a Ray cluster, or a SimRL simulation. Logged samples can replay the prompt and response lengths of a real job. [Extension guide](docs/extensions.md) · [Simulation guide](docs/simulator-cost-search.md)
+- **Execution and replay.** The same controller can drive local workers, a Ray cluster, or the built-in Python simulator. Simulation and replay need no GPU or external simulator package. Logged samples can replay the prompt and response lengths of a real job. [Extension guide](docs/extensions.md) · [Simulation guide](docs/simulator-cost-search.md)
 
 ## Getting Started
 
 ### Install
 
-Run the following from the repository root in a Linux environment with CUDA and Python 3.10 or later.
+For GPU training, run the following from the repository root in a Linux environment with CUDA and Python 3.10 or later.
 
 ```bash
 python -m pip install -e '.[gpu]'
 ```
 
 In an environment that already has the GPU dependencies, use `python -m pip install --no-deps -e .`. Add `packed` for the FlashAttention training recipes, `cluster` for Ray, and `parquet` for Parquet inputs. For example, `python -m pip install -e '.[gpu,packed,cluster,parquet]'` installs all four extras. [Package requirements](pyproject.toml)
+
+### Try simulation on a CPU
+
+The built-in simulator uses only the Python standard library. Install the base package, then run the bundled configuration without downloading model weights:
+
+```bash
+python -m pip install -e .
+python -m DynaMOPD.run --simulate --config configs/minimal-4gpu.json --out runs/sim-smoke
+python -m DynaMOPD.tools.audit runs/sim-smoke
+```
+
+Use a fresh output directory for each run. Simulation models scheduling, token lengths and costs; it does not train model weights or measure model quality.
 
 ### Run a four-GPU example
 
@@ -86,7 +98,7 @@ To generate an illustrated guide with links to the implementation, run `python t
 
 ## Acknowledgments
 
-The training objective draws on work from verl. The virtual-time executor builds on SimRL and uses its `srl` package for simulation. [verl](https://github.com/verl-project/verl) · [SimRL integration](backends/simulation.py)
+The training objective draws on work from [verl](https://github.com/verl-project/verl). Earlier simulation work used SimRL; the current virtual-time executor and cost models are implemented within DynaMOPD and require no `srl` package.
 
 ## License
 

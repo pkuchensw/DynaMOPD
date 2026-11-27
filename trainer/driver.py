@@ -58,7 +58,7 @@ def fit(config: dict, *, output, data_path=None, state_dir=None, simulate=False,
                 tokenizer, common = vocabulary(cfg)
                 data = load_data(Path(data_path or ROOT/"data/native-smoke.jsonl"))
 
-            trace.emit("config", backend="simrl" if simulate else cfg["engine"], policy=cfg["policy"],
+            trace.emit("config", backend="simulation" if simulate else cfg["engine"], policy=cfg["policy"],
                        visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"), config=cfg)
             start = time.monotonic()
             backend = executor(cfg)

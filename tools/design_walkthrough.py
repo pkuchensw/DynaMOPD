@@ -39,9 +39,9 @@ def section(anchor, nav, title, lead, body, closing, refs, notes=()):
     return dict(anchor=anchor, nav=nav, title=title, lead=lead, body=body, closing=closing, refs=refs, notes=notes)
 
 
-def source(ref, out, simrl):
+def source(ref, out):
     path, name, marker = ref
-    target = (simrl / path[6:]) if path.startswith("SimRL/") else ROOT / path
+    target = ROOT / path
     label = f"{path} · {name}"
     if not target.is_file():
         return f'<p class="filename">{esc(label)}</p>'
@@ -115,7 +115,8 @@ def motivation_observation(trace):
             joint_seconds += t - previous
         active[op] += delta
         previous = t
-    clock = {"sglang_fsdp2": "hardware worker times", "simrl": "the simulation clock"}.get(backend, "executor times")
+    clock = {"sglang_fsdp2": "hardware worker times", "simulation": "the simulation clock",
+             "simrl": "the simulation clock"}.get(backend, "executor times")
     return (f'<aside class="observation"><strong>Observed overlap</strong><p>In round v{version}, scoring started at'
             f' {score:.2f} s, microbatch training started at {train:.2f} s, and the last generation batch returned at {last:.2f} s. '
             f'All three operations were in flight together for {joint_seconds:.2f} s. '
@@ -151,7 +152,7 @@ def design_sections(trace):
             "number of delivered scores len(labels), and the reusable teacher KV offset kv[group] independently. "
             "A student can migrate while teacher caches are evicted.",
             flow([("Controller", "Choose an action from confirmed state"), ("Group lease", "Reserve the one or two groups required"),
-                  ("Executor", "Run local or Ray workers, or advance SimRL"), ("Completion", "Check the version and offsets, update state and release the lease")])
+                  ("Executor", "Run local or Ray workers, or advance the built-in simulator"), ("Completion", "Check the version and offsets, update state and release the lease")])
             + prefix_example() +
                 '<h3>Scoring boundaries</h3><p>For interval [a, b), the worker requests input log probabilities '
                 'from SGLang starting at '
@@ -184,9 +185,9 @@ def design_sections(trace):
                  ("trainer/data.py","vocabulary","sampled_id_limits")),
             ]),
         section("model", "Cost model", "Event simulation and online calibration",
-            "The SimRL elastic rollout simulator advances each inference instance in virtual time and releases "
-            "its group when the instance drains. DynaMOPD reuses UnifiedRoofline, ScoringCost and the paged KV "
-            "manager. Its virtual executor implements the same action and completion interface as the hardware "
+            "DynaMOPD's built-in simulator advances each inference instance in virtual time and releases "
+            "its group when the instance drains. Its cost models and paged KV accounting use only the Python "
+            "standard library. The virtual executor implements the same action and completion interface as the hardware "
             "executor. Hardware workers return when the operation finishes. The simulator inserts the predicted "
             "completion into its event queue.",
             table(["Operation","Estimated costs","Parallel execution"],[
@@ -194,9 +195,9 @@ def design_sections(trace):
                 ("Teacher scoring","Fixed overhead and input cost fitted per route, allowing for cached prefixes on the target replica","Deliver segments in offset order within each trajectory. Batch across trajectories."),
                 ("Microbatch training","Forward and backward time from the packed or padded input width on each FSDP rank","Form microbatches from ready samples and use the slowest rank."),
                 ("Role changes and publication","Switch direction, resident state, teacher startup and shutdown, local preparation and shared transfer","The publication barrier waits for every group. Count each shared transfer once.")])
-            + '<p class="equation"><b>SimRL time per step</b><code>T = max(F, W + G·N + Aₚ·P/b + A𝒹·C)</code>'
+            + '<p class="equation"><b>Simulated time per step</b><code>T = max(F, W + G·N + Aₚ·P/b + A𝒹·C)</code>'
             '<i>F is the minimum step time, W the fixed cost, N the tokens in the step, P the prefill attention '
-            'work, C the sum of decode context lengths, and b the block size parameter.</i></p>'
+            'work, C the sum of decode context lengths, and b the batch size.</i></p>'
             '<p>For a batched decode RPC, the fit also accounts for context accumulated by each request in the '
             'segment. Given an initial context of c tokens and s more steps, its contribution is '
             '<code>s·c + s(s−1)/2</code>. Generating the same number of tokens can therefore take different amounts of time.</p>',
@@ -205,8 +206,8 @@ def design_sections(trace):
             "and role-switch times. Later searches fit and update costs from this job. Offline replay may use "
             "known final lengths. The online policy uses only previously reported progress and history. The "
             "trace records the CPU time spent planning separately in planner_wall_s.",
-            [("SimRL/srl/simulator/mopd_elastic.py","ElasticMopdSimulator._collect_batch","def advance"),
-             ("SimRL/srl/cost/rollout/roofline.py","UnifiedRoofline._raw","return ("),("backends/simulation.py","Simulator.wait","heappop"),
+            [("backends/sim_model.py","KvCacheManager.allocate","def allocate"),
+             ("backends/sim_model.py","UnifiedRoofline.step_time","def step_time"),("backends/simulation.py","Simulator.wait","heappop"),
              ("backends/sim_profile.py","decode_features","ticks ="),("scheduler/calibration.py","update_profile","fit_profile(cfg")],
             notes=[
                 ("Measurements in the first training round",
@@ -376,7 +377,7 @@ def design_sections(trace):
                 ("Wide TP for a tail request",
                     "SGLang prebuilds a wide engine for a pair of groups on one node and puts it to sleep with "
                     "the matching weight version. On takeover it wakes, replays the prefix and validates the log "
-                    "probability of the last committed token. SimRL can also model the cost of moving KV shards "
+                    "probability of the last committed token. The simulator can also model the cost of moving KV shards "
                     "directly.")])
             +
                 '<p class="equation"><b>Estimated local benefit of wider TP</b>Narrow decode time − wide decode '
@@ -413,7 +414,7 @@ def design_sections(trace):
                 ("Hardware handoff and simulated resharding",
                     "The wide engine validates the seed, absolute position and version, replays the prefix and "
                     "compares the last token's log probability. The completion reports wake_s, prefill_s and "
-                    "rebuilt_tokens separately. An alternative SimRL model estimates direct transfers by logical "
+                    "rebuilt_tokens separately. An alternative simulation model estimates direct transfers by logical "
                     "KV heads, charges communication group setup on the first loan and returns only shards added "
                     "since expansion on early contraction. Transfer byte counts describe different operations in "
                     "these two paths.",
@@ -674,7 +675,7 @@ def trace_section(trace):
             chart += '<p>This decision has no completion record that matches a dispatch by decision_id. The timeline shows all recorded actions in the round.</p>'
     else:
         chart += '<p>The trace contains no schedule_search event with multiple candidates for this round. The timeline shows the recorded worker intervals.</p>'
-    clock = "the simulation clock" if backend == "simrl" else ("hardware worker times" if backend == "sglang_fsdp2" else "executor times")
+    clock = "the simulation clock" if backend in ("simulation", "simrl") else ("hardware worker times" if backend == "sglang_fsdp2" else "executor times")
     group_count = f" across {groups} GPU groups" if groups else ""
     return section("case-study", "Run example", "Predicted layouts and observed execution",
         f"Student version v{v} → v{v+1}{group_count}. Times use {clock} and are relative to round_start.",
@@ -766,11 +767,10 @@ document.getElementById('print').onclick = () => window.print();
 """
 
 
-def write_guide(output, trace=None, version=None, simrl=None):
+def write_guide(output, trace=None, version=None):
     output = output.resolve()
     if trace and trace.resolve() == output:
         raise ValueError("The output path would overwrite the input trace")
-    simrl = simrl or ROOT.parent / "SimRL"
     record = read_trace(trace, version) if trace else None
     sections = design_sections(record)
     if record:
@@ -785,7 +785,7 @@ def write_guide(output, trace=None, version=None, simrl=None):
             rows = "".join(f"<dt>{esc(title)}</dt><dd>{esc(reason)}</dd>" for title, reason, _ in notes)
             detail = (f'<details class="design-notes"><summary>Implementation notes ({len(notes)}) · {esc(notes[0][0])}'
                       f'</summary><dl>{rows}</dl></details>')
-        refs = ''.join(source(ref, output, simrl) for ref in [*item["refs"], *(ref for _, _, ref in notes)])
+        refs = ''.join(source(ref, output) for ref in [*item["refs"], *(ref for _, _, ref in notes)])
         blocks.append(f'<section id="{anchor}"><h2>{esc(item["title"])}</h2>'
                       f'<p>{esc(item["lead"])}</p>{item["body"]}<p>{esc(item["closing"])}</p>{detail}'
                       f'<details class="sources"><summary>Source code</summary>{refs}</details></section>')
@@ -795,7 +795,7 @@ def write_guide(output, trace=None, version=None, simrl=None):
                 f'<header><div><a href="#top">DynaMOPD</a><button id="print" type="button">Print guide</button></div></header>'
                 f'<div class="layout"><nav aria-label="Contents">{"".join(navigation)}</nav><main>'
                 f'<div class="title" id="top"><h1>Intra-round parallelism in synchronous multi-teacher distillation</h1>'
-                f'<p>SimRL cost modeling, dynamic GPU group scheduling and execution with SGLang and FSDP2</p></div>'
+                f'<p>Built-in cost simulation, dynamic GPU group scheduling and execution with SGLang and FSDP2</p></div>'
                 f'{"".join(blocks)}</main></div><script>{JS}</script></body></html>')
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(document, encoding="utf-8")
@@ -806,13 +806,12 @@ def main():
     parser.add_argument("--out", type=Path, default=ROOT/"runs"/"system-design.html", help="path for the self-contained HTML guide")
     parser.add_argument("--trace", type=Path, help="optional events.jsonl trace or run directory containing it")
     parser.add_argument("--version", type=int, help="student version at round start (default: first complete round with a multi-candidate decision, or first complete round)")
-    parser.add_argument("--simrl-root", type=Path, help="optional SimRL source directory for displaying code excerpts")
     args = parser.parse_args()
     if args.version is not None and not args.trace:
         parser.error("--version requires --trace")
     trace = args.trace/"events.jsonl" if args.trace and args.trace.is_dir() else args.trace
     try:
-        write_guide(args.out, trace, args.version, args.simrl_root)
+        write_guide(args.out, trace, args.version)
     except (KeyError, ValueError, OSError) as error:
         parser.exit(1, f"{error}\n")
     print(args.out.resolve())

@@ -1,4 +1,4 @@
-"""Batch-one cost model shared by the native standby mesh and SimRL."""
+"""Batch-one cost model shared by the native standby mesh and simulation."""
 import math
 
 from ..cluster.topology import local_pairs

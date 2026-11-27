@@ -3,7 +3,7 @@ from collections import defaultdict
 from itertools import combinations
 import math
 
-from srl.cost.rollout.roofline import UnifiedRoofline
+from .sim_model import UnifiedRoofline
 
 
 class TailTP:

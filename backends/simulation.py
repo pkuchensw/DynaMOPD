@@ -1,4 +1,4 @@
-"""Virtual-time executor using SimRL rollout/scoring costs and its KV block manager."""
+"""Virtual-time executor with built-in rollout/scoring costs and paged KV accounting."""
 import heapq
 import random
 import math
@@ -8,10 +8,7 @@ from .sim_profile import (SwitchState, decode_duration, decode_features, decode_
                           fitted_switch, replay_move_base, train_seconds, teacher_lease_window)
 from itertools import count
 
-from srl.component.rollout.engine.kv.manager import KvCacheManager
-from srl.component.rollout.engine.request import Request
-from srl.cost.rollout.roofline import UnifiedRoofline
-from srl.cost.scoring import ScoringCost
+from .sim_model import KvCacheManager, Request, ScoringCost, UnifiedRoofline
 from ..cluster.topology import GroupPlacement, requested_nodes, warm_teacher_routes
 
 
@@ -22,7 +19,7 @@ class Simulator:
 
     @staticmethod
     def validate_checkpoint(path):
-        raise ValueError("SimRL does not restore model checkpoints")
+        raise ValueError("the simulator does not restore model checkpoints")
 
     def __init__(self, cfg):
         if cfg.get("sim_execution_profile") is not None:
@@ -41,7 +38,7 @@ class Simulator:
         blocks = cfg.get("sim_blocks", cfg.get("engine_kv_tokens",131072)//16)
         self.tp_size = cfg.get("inference_tp_size", width)
         self.replicas = width // self.tp_size
-        self.managers = [[KvCacheManager(blocks, enable_caching=False) for _ in range(self.replicas)]
+        self.managers = [[KvCacheManager(blocks) for _ in range(self.replicas)]
                          for _ in range(cfg["groups"])]
         self.lanes = [{} for _ in self.managers]
         self.leased_teachers = (cfg.get("engine") == "sglang_fsdp2" and
@@ -71,7 +68,7 @@ class Simulator:
                 self.tail_tp.configure_meshes(self.tp_setup)
             self.wide_idle_bytes = {group:options.get("idle_bytes_per_gpu",0)
                                     for pair in self.tail_tp.pairs for group in pair}
-            self.wide_managers = [KvCacheManager(blocks,enable_caching=False) for _ in range(self.tail_tp.wide)]
+            self.wide_managers = [KvCacheManager(blocks) for _ in range(self.tail_tp.wide)]
         elif cfg.get("sim_tp"):
             from .sim_tp import TailTP
             if self.replicas != 1:
@@ -142,7 +139,7 @@ class Simulator:
             self.reqs[gpu][rid] = Request(next(self.serial), len(x["prompt"]), self.targets[rid], version)
             self.lanes[gpu][rid] = self.lane(x)
         req = self.reqs[gpu][rid]
-        if self.managers[gpu][self.lanes[gpu][rid]].allocate(req, size-req.prefilled, []) is None:
+        if self.managers[gpu][self.lanes[gpu][rid]].allocate(req, size-req.prefilled) is None:
             raise MemoryError("simulated rollout KV exhausted")
         req.prefilled = size
 
@@ -262,7 +259,7 @@ class Simulator:
 
     def grow_wide(self, size):
         for manager,req in zip(self.wide_managers,self.wide_requests,strict=True):
-            if size > req.prefilled and manager.allocate(req,size-req.prefilled,[]) is None:
+            if size > req.prefilled and manager.allocate(req,size-req.prefilled) is None:
                 raise MemoryError("wide TP rank has insufficient KV pages")
             req.prefilled = size
 
@@ -465,7 +462,7 @@ class Simulator:
                     scores[rid]["topk"] = [position]*(end-start)
             lanes, evicted = trim_score_cache(cache, cfg["teacher_kv_tokens"])
             teacher = self.teacher_costs.get(p["teacher"], self.teacher)
-            dt = max(teacher.predict(tuple(lane), 1) for lane in lengths if lane)
+            dt = max(teacher.predict(lane) for lane in lengths if lane)
             dt += c.get("topk_value_s", 0.) * cfg.get("teacher_top_k", 0) * sum(len(x["labels"]) for x in scores.values())
             value = dict(scores=scores, evicted=evicted, flushed_score_lanes=lanes,
                          inference_tp_size=self.tp_size, replica_requests=[len(lane) for lane in lengths])

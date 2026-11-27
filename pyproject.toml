@@ -41,7 +41,7 @@ packages = [
 
 [tool.setuptools.package-data]
 DynaMOPD = [
-    "README.md", "README_CN.md", "docs/*.md", "LICENSE", "pyproject.toml",
+    "README.md", "README_CN.md", "docs/*.md", "docs/dynamopd-logo.png", "LICENSE", "pyproject.toml",
     "configs/*.json", "data/native-smoke.jsonl", "data/smoke.jsonl", "launch.sh", "examples/*.sh",
 ]
 "DynaMOPD.tools" = ["timeline.html"]

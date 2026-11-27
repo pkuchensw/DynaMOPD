@@ -25,7 +25,7 @@ el("round").value=round;el("node").value=node;
 const types=new Set(data.rows.flatMap(g=>Array.from(new Set(g.spans.map(s=>s[2])))));
 for(const [k,[label,color]] of Object.entries(palette)){if(!types.has(k))continue;const span=$add(el("legend"),"span",label);const d=document.createElement("i");d.className="dot";d.style.background=color;span.prepend(d)}
 const measured=data.rows.some(g=>g.samples.some(s=>s[1]!==null));
-el("help").textContent=(data.simulated?"Times are on the SimRL virtual clock.":"Bars show operations reported by each GPU group, including time spent on RPCs, synchronization and engine waits.")+
+el("help").textContent=(data.simulated?"Times are on the DynaMOPD simulator's virtual clock.":"Bars show operations reported by each GPU group, including time spent on RPCs, synchronization and engine waits.")+
 " Gaps indicate that no operation was recorded."+(measured?" The line below each bar shows device utilization from NVML (0–100%). Hover to see the operation, GPU memory usage and sample time.":" No NVML utilization samples are available for this run.");
 el("warnings").textContent=data.warnings.join(" · ");
 for(const m of data.metrics){el("summary").hidden=false;const tr=$add(el("metrics"),"tr","");for(const v of [m.step,m.tokens,m.round_s?.toFixed(2),m.effective_tokens_per_s?.toFixed(1),m.loss_per_token?.toPrecision(4)])$add(tr,"td",v??"—")}
